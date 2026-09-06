@@ -1934,6 +1934,11 @@ def init_db():
                 "ALTER TABLE referral_tasks ADD COLUMN task_state TEXT "
                 "NOT NULL DEFAULT 'AVAILABLE'"
             )
+        if "task_origin" not in referral_task_columns:
+            conn.execute(
+                "ALTER TABLE referral_tasks ADD COLUMN task_origin TEXT "
+                "NOT NULL DEFAULT 'internal'"
+            )
         # طلبات تنفيذ المهام المدفوعة: لا تُصرف المكافأة قبل موافقة العميل.
         conn.execute("""
             CREATE TABLE IF NOT EXISTS referral_task_claims (
@@ -2032,6 +2037,11 @@ def init_db():
             conn.execute(
                 "ALTER TABLE manual_tasks ADD COLUMN task_state TEXT "
                 "NOT NULL DEFAULT 'AVAILABLE'"
+            )
+        if "task_origin" not in manual_task_columns:
+            conn.execute(
+                "ALTER TABLE manual_tasks ADD COLUMN task_origin TEXT "
+                "NOT NULL DEFAULT 'internal'"
             )
         conn.execute(
             "UPDATE manual_tasks SET target_reference = task_link "
@@ -3190,14 +3200,22 @@ def create_referral_task(
     referral_link: str,
     quantity: int | None = None,
     points_spent: int | None = None,
+    *,
+    task_origin: str = "internal",
 ) -> int | None:
-    """يخصم تكلفة الطلب ويحفظه في معاملة SQLite واحدة."""
+    """يخصم تكلفة الطلب ويحفظه في معاملة SQLite واحدة.
+
+    Internal tasks (default) have no expiration timer.
+    External tasks may pass task_origin="external" with an explicit expires_at.
+    """
     if quantity is None:
         quantity = get_service_quantity(REFERRAL_SERVICE_KEY)
     if points_spent is None:
         points_spent = get_service_price(REFERRAL_SERVICE_KEY)
-    from datetime import timedelta
-    expires_at = (datetime.utcnow() + timedelta(hours=TASK_EXPIRY_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+    # Internal tasks: no timer.  External tasks set expires_at explicitly.
+    expires_at = None if task_origin == "internal" else (
+        (datetime.utcnow() + timedelta(hours=TASK_EXPIRY_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+    )
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         cur = conn.execute(
@@ -3211,9 +3229,9 @@ def create_referral_task(
         task = conn.execute(
             "INSERT INTO referral_tasks "
             "(buyer_id, referral_link, quantity_requested, quantity_remaining, "
-            "points_spent, amount_cents, expires_at, task_state) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'AVAILABLE')",
-            (buyer_id, referral_link, quantity, quantity, points_spent, points_spent, expires_at),
+            "points_spent, amount_cents, expires_at, task_state, task_origin) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'AVAILABLE', ?)",
+            (buyer_id, referral_link, quantity, quantity, points_spent, points_spent, expires_at, task_origin),
         )
         task_id = int(task.lastrowid)
         conn.commit()
@@ -3585,21 +3603,30 @@ def create_manual_task(
     task_type: str = "social_manual",
     target_reference: str | None = None,
     task_instructions: str = "",
+    *,
+    task_origin: str = "internal",
 ) -> int:
+    """Create a manual task.
+
+    Internal tasks (default) have no expiration timer.
+    External tasks may pass task_origin="external" with an explicit expires_at.
+    """
     if task_type not in {"social_manual", "telegram_channel"}:
         raise ValueError("Unsupported manual task type")
     target_reference = target_reference or task_link
-    from datetime import timedelta
-    expires_at = (datetime.utcnow() + timedelta(hours=TASK_EXPIRY_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+    # Internal tasks: no timer.  External tasks set expires_at explicitly.
+    expires_at = None if task_origin == "internal" else (
+        (datetime.utcnow() + timedelta(hours=TASK_EXPIRY_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+    )
     with get_connection() as conn:
         task = conn.execute(
             "INSERT INTO manual_tasks "
             "(title, task_link, task_type, target_reference, task_instructions, "
             "reward_points, quantity_requested, quantity_remaining, "
-            "expires_at, task_state) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'AVAILABLE')",
+            "expires_at, task_state, task_origin) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'AVAILABLE', ?)",
             (title, task_link, task_type, target_reference, task_instructions,
-             reward_points, quantity, quantity, expires_at),
+             reward_points, quantity, quantity, expires_at, task_origin),
         )
         return int(task.lastrowid)
 

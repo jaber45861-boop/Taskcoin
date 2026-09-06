@@ -79,7 +79,7 @@ class TestSchema(unittest.TestCase):
 
 
 class TestTaskCreation(unittest.TestCase):
-    def test_referral_task_sets_expires_at_and_state(self):
+    def test_referral_task_sets_state_and_internal_origin(self):
         uid = 20001
         _add_user(uid)
         with gb.get_connection() as conn:
@@ -89,18 +89,20 @@ class TestTaskCreation(unittest.TestCase):
         tid = gb.create_referral_task(uid, "https://t.me/TestBot?start=abc")
         self.assertIsNotNone(tid)
         with gb.get_connection() as conn:
-            row = conn.execute("SELECT expires_at, task_state FROM referral_tasks WHERE id = ?", (tid,)).fetchone()
+            row = conn.execute("SELECT expires_at, task_state, task_origin FROM referral_tasks WHERE id = ?", (tid,)).fetchone()
         self.assertEqual(row["task_state"], "AVAILABLE")
-        self.assertIsNotNone(row["expires_at"])
+        self.assertEqual(row["task_origin"], "internal")
+        self.assertIsNone(row["expires_at"])  # Internal tasks have no timer
         _cleanup_task("referral_tasks", tid)
 
-    def test_manual_task_sets_expires_at_and_state(self):
+    def test_manual_task_sets_state_and_internal_origin(self):
         tid = gb.create_manual_task(title="Test task", task_link="https://example.com", reward_points=5000, quantity=5)
         self.assertIsNotNone(tid)
         with gb.get_connection() as conn:
-            row = conn.execute("SELECT expires_at, task_state FROM manual_tasks WHERE id = ?", (tid,)).fetchone()
+            row = conn.execute("SELECT expires_at, task_state, task_origin FROM manual_tasks WHERE id = ?", (tid,)).fetchone()
         self.assertEqual(row["task_state"], "AVAILABLE")
-        self.assertIsNotNone(row["expires_at"])
+        self.assertEqual(row["task_origin"], "internal")
+        self.assertIsNone(row["expires_at"])  # Internal tasks have no timer
         _cleanup_task("manual_tasks", tid)
 
 
@@ -263,6 +265,286 @@ class TestBackwardCompatibility(unittest.TestCase):
         tasks = gb.get_active_referral_tasks(60002)
         self.assertIn(6001, [t["id"] for t in tasks])
         _cleanup_task("referral_tasks", 6001)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Micro-Order 5: Internal vs External task_origin timer scope
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestTaskOriginColumn(unittest.TestCase):
+    """Verify the task_origin column exists on both tables."""
+
+    def test_referral_tasks_has_task_origin(self):
+        with gb.get_connection() as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(referral_tasks)").fetchall()}
+        self.assertIn("task_origin", cols)
+
+    def test_manual_tasks_has_task_origin(self):
+        with gb.get_connection() as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(manual_tasks)").fetchall()}
+        self.assertIn("task_origin", cols)
+
+
+class TestInternalTaskCreationNoTimer(unittest.TestCase):
+    """Internal tasks must be created with task_origin='internal' and expires_at=NULL."""
+
+    def setUp(self):
+        _add_user(70001)
+        # Ensure sufficient balance for referral cost (650 EGP cents = 130M nano)
+        with gb.get_connection() as conn:
+            conn.execute("UPDATE users SET balance_usd_nano = 1000000000 WHERE user_id = 70001")
+            conn.commit()
+
+    def test_create_referral_task_internal_no_timer(self):
+        """Referral task: task_origin='internal', expires_at is NULL."""
+        tid = gb.create_referral_task(70001, "https://t.me/TestBot?start=abc")
+        self.assertIsNotNone(tid)
+        with gb.get_connection() as conn:
+            row = conn.execute(
+                "SELECT task_origin, expires_at, task_state FROM referral_tasks WHERE id = ?",
+                (tid,),
+            ).fetchone()
+        self.assertEqual(row["task_origin"], "internal")
+        self.assertIsNone(row["expires_at"])
+        self.assertEqual(row["task_state"], "AVAILABLE")
+        _cleanup_task("referral_tasks", tid)
+
+    def test_create_manual_task_internal_no_timer(self):
+        """Manual task: task_origin='internal', expires_at is NULL."""
+        tid = gb.create_manual_task(
+            title="Internal task", task_link="https://example.com",
+            reward_points=5000, quantity=5,
+        )
+        self.assertIsNotNone(tid)
+        with gb.get_connection() as conn:
+            row = conn.execute(
+                "SELECT task_origin, expires_at, task_state FROM manual_tasks WHERE id = ?",
+                (tid,),
+            ).fetchone()
+        self.assertEqual(row["task_origin"], "internal")
+        self.assertIsNone(row["expires_at"])
+        self.assertEqual(row["task_state"], "AVAILABLE")
+        _cleanup_task("manual_tasks", tid)
+
+
+class TestInternalTaskRemainsAvailable(unittest.TestCase):
+    """Internal tasks must remain claimable even after >24h simulated passage."""
+
+    def setUp(self):
+        _add_user(71001)
+        _add_user(71002)
+        with gb.get_connection() as conn:
+            conn.execute("UPDATE users SET balance_usd_nano = 1000000000 WHERE user_id = 71001")
+            conn.commit()
+
+    def test_referral_task_visible_after_48h(self):
+        tid = gb.create_referral_task(71001, "https://t.me/TBot?start=deep")
+        self.assertIsNotNone(tid)
+        # Simulate 48h passage by backdating created_at (expires_at remains NULL)
+        with gb.get_connection() as conn:
+            conn.execute(
+                "UPDATE referral_tasks SET created_at = datetime('now', '-48 hours') WHERE id = ?",
+                (tid,),
+            )
+            conn.commit()
+        tasks = gb.get_active_referral_tasks(71002)
+        self.assertIn(tid, [t["id"] for t in tasks])
+        _cleanup_task("referral_tasks", tid)
+
+    def test_manual_task_visible_after_48h(self):
+        tid = gb.create_manual_task(
+            title="Long task", task_link="https://example.com",
+            reward_points=5000, quantity=5,
+        )
+        # Simulate 48h passage
+        with gb.get_connection() as conn:
+            conn.execute(
+                "UPDATE manual_tasks SET created_at = datetime('now', '-48 hours') WHERE id = ?",
+                (tid,),
+            )
+            conn.commit()
+        tasks = gb.get_active_manual_tasks()
+        self.assertIn(tid, [t["id"] for t in tasks])
+        _cleanup_task("manual_tasks", tid)
+
+
+class TestExternalTaskWithTimer(unittest.TestCase):
+    """External tasks with explicit expires_at must be blocked after expiry."""
+
+    def setUp(self):
+        _add_user(72001)
+        _add_user(72002)
+
+    def test_expired_external_referral_task_blocked(self):
+        """An external referral task with past expires_at is not claimable."""
+        past = (datetime.utcnow() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+        with gb.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO referral_tasks "
+                "(buyer_id, referral_link, quantity_requested, quantity_remaining, "
+                "points_spent, amount_cents, status, task_state, task_origin, expires_at) "
+                "VALUES (?, 'https://t.me/X?start=ext', 5, 5, 100, 100, 'active', 'AVAILABLE', 'external', ?)",
+                (72001, past),
+            )
+            conn.commit()
+        # Find the task id
+        with gb.get_connection() as conn:
+            row = conn.execute(
+                "SELECT id FROM referral_tasks WHERE buyer_id = 72001 AND task_origin = 'external'"
+            ).fetchone()
+        tid = row["id"]
+        self.assertEqual(gb.claim_referral_task(tid, 72002), "unavailable")
+        _cleanup_task("referral_tasks", tid)
+
+    def test_future_external_referral_task_claimable(self):
+        """An external referral task with future expires_at is claimable."""
+        future = (datetime.utcnow() + timedelta(hours=12)).strftime("%Y-%m-%d %H:%M:%S")
+        with gb.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO referral_tasks "
+                "(buyer_id, referral_link, quantity_requested, quantity_remaining, "
+                "points_spent, amount_cents, status, task_state, task_origin, expires_at) "
+                "VALUES (?, 'https://t.me/Y?start=ext2', 5, 5, 100, 100, 'active', 'AVAILABLE', 'external', ?)",
+                (72001, future),
+            )
+            conn.commit()
+        with gb.get_connection() as conn:
+            row = conn.execute(
+                "SELECT id FROM referral_tasks WHERE buyer_id = 72001 AND task_origin = 'external'"
+            ).fetchone()
+        tid = row["id"]
+        self.assertEqual(gb.claim_referral_task(tid, 72002), "pending_client")
+        _cleanup_task("referral_tasks", tid)
+
+    def test_expired_external_manual_task_hidden(self):
+        """An external manual task with past expires_at is not listed."""
+        past = (datetime.utcnow() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+        tid = gb.create_manual_task.__wrapped__(
+            title="External manual", task_link="https://ext.com",
+            reward_points=1000, quantity=3,
+        ) if hasattr(gb.create_manual_task, '__wrapped__') else None
+        # Manually insert with external origin and past expires
+        with gb.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO manual_tasks "
+                "(title, task_link, task_type, target_reference, task_instructions, "
+                "reward_points, quantity_requested, quantity_remaining, "
+                "status, task_state, task_origin, expires_at) "
+                "VALUES ('Ext manual', 'https://ext.com', 'social_manual', 'https://ext.com', '', "
+                "1000, 3, 3, 'active', 'AVAILABLE', 'external', ?)",
+                (past,),
+            )
+            conn.commit()
+        with gb.get_connection() as conn:
+            row = conn.execute(
+                "SELECT id FROM manual_tasks WHERE task_origin = 'external' AND expires_at = ?",
+                (past,),
+            ).fetchone()
+        tid = row["id"]
+        tasks = gb.get_active_manual_tasks()
+        self.assertNotIn(tid, [t["id"] for t in tasks])
+        _cleanup_task("manual_tasks", tid)
+
+
+class TestExistingSubmissionsPreservedAfterExternalExpiry(unittest.TestCase):
+    """Pending submissions on an external task remain reviewable after expiry."""
+
+    def setUp(self):
+        _add_user(73001)
+        _add_user(73002)
+
+    def test_claim_survives_external_task_expiry(self):
+        past = (datetime.utcnow() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+        with gb.get_connection() as conn:
+            conn.execute("DELETE FROM referral_task_claims WHERE task_id = 7301")
+            conn.execute(
+                "INSERT INTO referral_tasks "
+                "(id, buyer_id, referral_link, quantity_requested, quantity_remaining, "
+                "points_spent, amount_cents, status, task_state, task_origin, expires_at) "
+                "VALUES (7301, ?, 'https://t.me/Z?start=pres', 5, 0, 100, 100, 'completed', 'EXPIRED', 'external', ?)",
+                (73002, past),
+            )
+            conn.execute(
+                "INSERT INTO referral_task_claims (task_id, worker_id, buyer_id, status) "
+                "VALUES (7301, ?, ?, 'pending_client')",
+                (73001, 73002),
+            )
+            conn.commit()
+        claim = gb.get_referral_task_claim_for_worker(7301, 73001)
+        self.assertIsNotNone(claim)
+        self.assertEqual(claim["status"], "pending_client")
+        _cleanup_task("referral_tasks", 7301)
+
+
+class TestAdminTimerOnExternalTask(unittest.TestCase):
+    """Admin extend/reactivate works on explicitly timed external tasks."""
+
+    def setUp(self):
+        _add_user(74001)
+
+    def test_extend_external_task(self):
+        past = (datetime.utcnow() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+        with gb.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO referral_tasks "
+                "(id, buyer_id, referral_link, quantity_requested, quantity_remaining, "
+                "points_spent, amount_cents, status, task_state, task_origin, expires_at) "
+                "VALUES (7401, ?, 'https://t.me/A?start=ext', 5, 5, 100, 100, 'active', 'AVAILABLE', 'external', ?)",
+                (74001, past),
+            )
+            conn.commit()
+        ok = gb.extend_task_timer(7401, "referral_tasks", extra_hours=24)
+        self.assertTrue(ok)
+        with gb.get_connection() as conn:
+            row = conn.execute(
+                "SELECT task_state, expires_at, task_origin FROM referral_tasks WHERE id = 7401"
+            ).fetchone()
+        self.assertEqual(row["task_state"], "AVAILABLE")
+        self.assertEqual(row["task_origin"], "external")
+        # expires_at should now be in the future
+        exp_dt = datetime.strptime(row["expires_at"], "%Y-%m-%d %H:%M:%S")
+        self.assertGreater(exp_dt, datetime.utcnow())
+        _cleanup_task("referral_tasks", 7401)
+
+    def test_reactivate_external_task(self):
+        with gb.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO referral_tasks "
+                "(id, buyer_id, referral_link, quantity_requested, quantity_remaining, "
+                "points_spent, amount_cents, status, task_state, task_origin) "
+                "VALUES (7402, ?, 'https://t.me/B?start=re', 5, 5, 100, 100, 'active', 'EXPIRED', 'external')",
+                (74001,),
+            )
+            conn.commit()
+        ok = gb.reactivate_task_admin(7402, "referral_tasks")
+        self.assertTrue(ok)
+        with gb.get_connection() as conn:
+            row = conn.execute(
+                "SELECT task_state, task_origin FROM referral_tasks WHERE id = 7402"
+            ).fetchone()
+        self.assertEqual(row["task_state"], "AVAILABLE")
+        self.assertEqual(row["task_origin"], "external")
+        _cleanup_task("referral_tasks", 7402)
+
+
+class TestExistingBehaviorUnchanged(unittest.TestCase):
+    """Timer-related existing behavior remains correct."""
+
+    def test_task_expiry_hours_still_24(self):
+        self.assertEqual(gb.TASK_EXPIRY_HOURS, 24)
+
+    def test_no_user_facing_timer_leak(self):
+        import inspect
+        src = inspect.getsource(gb.build_tasks_text)
+        for word in ["expires_at", "deadline", "countdown", "timer"]:
+            self.assertNotIn(word.lower(), src.lower(), f"build_tasks_text leaks '{word}'")
+
+    def test_admin_all_tasks_includes_task_origin(self):
+        tasks = gb.get_all_tasks_for_admin(limit=50)
+        self.assertIsInstance(tasks, list)
+        for t in tasks:
+            self.assertIn("task_source", t)
 
 
 if __name__ == "__main__":
