@@ -1141,6 +1141,44 @@ def format_balance(nano_or_cents: int | None) -> str:
     return format_usd_nano(val)
 
 
+def parse_usd_to_nano(value: str) -> int | None:
+    """Parse a user-entered USD decimal string to integer USD nano.
+
+    Accepts: "0.01", "0.005", "100", "100.50" etc.
+    Returns None on invalid/negative/overflow input.
+    1 USD = 1_000_000_000 nano.
+    """
+    s = (value or "").strip()
+    if not s:
+        return None
+    # Try raw first (handles "0.01", "100", etc.)
+    for attempt in (s, s.replace(",", ".")):
+        try:
+            d = Decimal(attempt)
+            if d.is_nan() or d.is_infinite() or d < 0:
+                continue
+            nano = int(d * Decimal("1000000000"))
+            if nano > 0:
+                return nano
+        except (InvalidOperation, ValueError, OverflowError):
+            continue
+    return None
+
+
+def calc_advertiser_total_cost_nano(reward_nano: int, quantity: int) -> int:
+    """Calculate advertiser total cost in USD nano.
+
+    worker_pool = reward_nano × quantity
+    total = worker_pool × 1.30 (30% platform margin)
+    Uses the same formula as create_advertiser_task().
+    """
+    worker_pool = reward_nano * quantity
+    return int(
+        (Decimal(str(worker_pool)) * MARGIN_MULTIPLIER)
+        .quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    )
+
+
 def format_money_input(cents: int | None) -> str:
     return format_egp(cents)
 
@@ -5229,6 +5267,10 @@ def main_keyboard() -> InlineKeyboardMarkup:
     markup.add(InlineKeyboardButton(
         "📣 تثبيت إعلان / روّج لقناتك",
         callback_data="promote_channel",
+    ))
+    markup.add(InlineKeyboardButton(
+        "🎯 إنشاء مهمة إعلانية",
+        callback_data="create_ad_task",
     ))
     markup.add(InlineKeyboardButton(
         "📢 إضافة إعلان",
@@ -10569,6 +10611,254 @@ def callback_my_orders(call):
     bot.edit_message_text(text, chat_id=call.message.chat.id,
                           message_id=call.message.message_id, reply_markup=back_markup)
     bot.answer_callback_query(call.id)
+def callback_create_ad_task(call):
+    """Entry point for the advertiser task creation flow."""
+    user_id = call.from_user.id
+    user = get_user(user_id)
+    if user is None:
+        bot.answer_callback_query(call.id, "يرجى إرسال /start أولاً.", show_alert=True)
+        return
+    if not require_active_account(call):
+        return
+
+    # Check $0.01 eligibility gate (not a fee — not deducted)
+    if not has_minimum_usd_nano_balance(row_balance_cents(user)):
+        bot.answer_callback_query(
+            call.id,
+            f"❌ تحتاج إلى رصيد لا يقل عن {format_balance(TASK_CREATION_MIN_BALANCE_USD_NANO)} لإنشاء مهمة.",
+            show_alert=True,
+        )
+        return
+
+    user_state.pop(user_id, None)
+    intro = (
+        "🎯 <b>إنشاء مهمة إعلانية</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "أنشئ مهمة داخل TaskCoin لجذب مشتركين لقناتك على Telegram.\n\n"
+        "📌 <b>التفاصيل:</b>\n"
+        "• المهمة من نوع <b>انضمام قناة Telegram</b> فقط.\n"
+        "• المهمة داخلية ولا تنتهي تلقائياً.\n"
+        "• التكلفة تُدفع من محفظتك في TaskCoin.\n"
+        "• المكافأة لكل منفذ وتكلفة الإجمالي ستظهر قبل التأكيد.\n\n"
+        f"💼 رصيدك الحالي: <b>{balance_text(user)}</b>\n\n"
+        "أرسل الآن معرف القناة مثل:\n"
+        "<code>@my_channel</code>\n\n"
+        "أو أرسل رابط القناة مثل:\n"
+        "<code>https://t.me/my_channel</code>"
+    )
+    user_state[user_id] = {"step": "awaiting_ad_task_channel"}
+    bot.edit_message_text(
+        intro,
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ إلغاء", callback_data="back_main"),
+        ]]),
+    )
+    bot.answer_callback_query(call.id)
+
+
+@bot.message_handler(
+    func=lambda m: m.from_user.id in user_state
+    and user_state[m.from_user.id].get("step") == "awaiting_ad_task_channel"
+)
+def handle_ad_task_channel(message):
+    """Step 1: Receive and validate the Telegram channel."""
+    user_id = message.from_user.id
+    channel_username = normalize_channel_input(message.text or "")
+
+    if channel_username is None:
+        bot.send_message(
+            message.chat.id,
+            "⚠️ معرف القناة غير صحيح.\n\n"
+            "أرسل معرف قناة عامة مثل <code>@my_channel</code> "
+            "أو رابطاً مثل <code>https://t.me/my_channel</code>.",
+        )
+        return
+
+    # Basic Telegram channel validation
+    try:
+        chat = bot.get_chat(channel_username)
+        if getattr(chat, "type", None) != "channel":
+            bot.send_message(
+                message.chat.id,
+                "⚠️ يجب أن تكون القناة عامة على Telegram (ليست حساباً شخصياً أو مجموعة).",
+            )
+            return
+    except Exception:
+        bot.send_message(
+            message.chat.id,
+            "⚠️ تعذر الوصول إلى القناة. تأكد من صحة المعرف وأن القناة عامة.",
+        )
+        return
+
+    user_state[user_id]["channel"] = channel_username
+    user_state[user_id]["step"] = "awaiting_ad_task_quantity"
+    bot.send_message(
+        message.chat.id,
+        f"✅ القناة: <b>{html.escape(channel_username)}</b>\n\n"
+        "أرسل الآن <b>عدد المشتركين المطلوبين</b> (رقم موجب صحيح):",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ إلغاء", callback_data="back_main"),
+        ]]),
+    )
+
+
+@bot.message_handler(
+    func=lambda m: m.from_user.id in user_state
+    and user_state[m.from_user.id].get("step") == "awaiting_ad_task_quantity"
+)
+def handle_ad_task_quantity(message):
+    """Step 2: Receive and validate quantity."""
+    user_id = message.from_user.id
+    text = (message.text or "").strip()
+
+    try:
+        quantity = int(text)
+        if quantity <= 0:
+            raise ValueError
+    except (ValueError, TypeError):
+        bot.send_message(
+            message.chat.id,
+            "⚠️ الكمية يجب أن تكون رقماً صحيحاً موجباً.\n"
+            "مثال: <code>10</code>",
+        )
+        return
+
+    state = user_state[user_id]
+    state["quantity"] = quantity
+    state["step"] = "awaiting_ad_task_reward"
+    bot.send_message(
+        message.chat.id,
+        f"✅ العدد: <b>{quantity}</b> منفذ\n\n"
+        "أرسل الآن <b>مكافأة كل منفذ بالدولار</b> (رقم عشري):\n\n"
+        "مثال: <code>0.01</code> = one cent\n"
+        "مثال: <code>0.005</code> = half a cent\n"
+        "مثال: <code>0.10</code> = ten cents",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ إلغاء", callback_data="back_main"),
+        ]]),
+    )
+
+
+@bot.message_handler(
+    func=lambda m: m.from_user.id in user_state
+    and user_state[m.from_user.id].get("step") == "awaiting_ad_task_reward"
+)
+def handle_ad_task_reward(message):
+    """Step 3: Receive and validate worker reward, show confirmation."""
+    user_id = message.from_user.id
+    text = (message.text or "").strip()
+
+    reward_nano = parse_usd_to_nano(text)
+    if reward_nano is None:
+        bot.send_message(
+            message.chat.id,
+            "⚠️ المكافأة غير صحيحة.\n\n"
+            "أرسل رقماً عشرياً موجباً بالدولار، مثال: <code>0.01</code>",
+        )
+        return
+
+    state = user_state[user_id]
+    quantity = state["quantity"]
+    channel = state["channel"]
+
+    # Calculate costs using the SAME formula as create_advertiser_task()
+    worker_pool_nano = reward_nano * quantity
+    total_cost_nano = calc_advertiser_total_cost_nano(reward_nano, quantity)
+
+    # Read current balance
+    user = get_user(user_id)
+    balance = row_balance_cents(user) if user else 0
+    balance_after = balance - total_cost_nano
+
+    # Store preview data
+    state["reward_nano"] = reward_nano
+    state["total_cost_nano"] = total_cost_nano
+    state["worker_pool_nano"] = worker_pool_nano
+    state["balance_after"] = balance_after
+    state["step"] = "awaiting_ad_task_confirm"
+
+    confirm_text = (
+        "📋 <b>ملخص المهمة الإعلانية</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🎯 <b>النوع:</b> انضمام قناة Telegram\n"
+        f"📢 <b>القناة:</b> {html.escape(channel)}\n"
+        f"🔢 <b>العدد:</b> {quantity} منفذ\n"
+        f"🎁 <b>مكافأة كل منفذ:</b> {format_balance(reward_nano)}\n"
+        f"💰 <b>إجمالي مكافآت المنفذين:</b> {format_balance(worker_pool_nano)}\n"
+        f"📈 <b>هامش المنصة (30%):</b> {format_balance(total_cost_nano - worker_pool_nano)}\n"
+        f"💳 <b>التكلفة الإجمالية:</b> {format_balance(total_cost_nano)}\n"
+        f"💼 <b>رصيدك بعد الإنشاء:</b> {format_balance(balance_after)}\n\n"
+        "⏰ المهمة داخلية ولا تنتهي تلقائياً.\n\n"
+        "⚠️ <b>تأكد من صحة البيانات قبل التأكيد.</b>"
+    )
+    bot.send_message(
+        message.chat.id,
+        confirm_text,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ تأكيد الإنشاء", callback_data="ad_task_confirm")],
+            [InlineKeyboardButton("❌ إلغاء", callback_data="back_main")],
+        ]),
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "ad_task_confirm")
+def callback_ad_task_confirm(call):
+    """Step 4: Execute the task creation."""
+    user_id = call.from_user.id
+    state = user_state.get(user_id, {})
+
+    if state.get("step") != "awaiting_ad_task_confirm":
+        bot.answer_callback_query(call.id, "⚠️ انتهت صلاحية الطلب. أعد المحاولة.", show_alert=True)
+        return
+
+    # Prevent double-creation from repeated clicks
+    user_state.pop(user_id, None)
+
+    channel = state["channel"]
+    quantity = state["quantity"]
+    reward_nano = state["reward_nano"]
+
+    try:
+        task_id = create_advertiser_task(
+            advertiser_id=user_id,
+            title=f"انضم إلى {channel}",
+            task_link=f"https://t.me/{channel.lstrip('@')}",
+            reward_nano=reward_nano,
+            quantity=quantity,
+            task_type="telegram_channel",
+            target_reference=channel,
+            task_instructions=f"اشترك في القناة {channel} وأكمل.",
+        )
+    except Exception:
+        task_id = None
+
+    if task_id is None:
+        bot.answer_callback_query(call.id)
+        bot.send_message(
+            call.message.chat.id,
+            "❌ تعذر إنشاء المهمة.\n\n"
+            "يمكن أن يكون السبب: رصيد غير كافٍ أو خطأ داخلي.\n"
+            "تأكد من رصيدك وحاول مرة أخرى.",
+            reply_markup=main_keyboard(),
+        )
+        return
+
+    updated = get_user(user_id)
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        call.message.chat.id,
+        "✅ <b>تم إنشاء المهمة بنجاح!</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🆔 <b>رقم المهمة:</b> <code>{task_id}</code>\n"
+        f"📢 <b>القناة:</b> {html.escape(channel)}\n"
+        f"🔢 <b>العدد:</b> {quantity} منفذ\n"
+        f"🎁 <b>مكافأة كل منفذ:</b> {format_balance(reward_nano)}\n"
+        f"💳 <b>المبلغ المخصوم:</b> {format_balance(state['total_cost_nano'])}\n"
+        f"💼 <b>رصيدك المتبقي:</b> {balance_text(updated)}",
+        reply_markup=main_keyboard(),
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
