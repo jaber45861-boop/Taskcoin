@@ -338,5 +338,116 @@ class TestBackendFlow(unittest.TestCase):
         _cleanup_task(tid)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 8. Double-confirm regression test
+# ══════════════════════════════════════════════════════════════════════════════
+class TestDoubleConfirm(unittest.TestCase):
+    """Prove repeated confirmation cannot create more than one task."""
+
+    def setUp(self):
+        self.uid = 95020
+        _add_user(self.uid, balance_nano=1_000_000_000)
+        self._tasks_created = []
+
+    def tearDown(self):
+        for tid in self._tasks_created:
+            _cleanup_task(tid)
+        _cleanup_user(self.uid)
+
+    def _make_call(self, user_id, message_id=99901, chat_id=None):
+        """Build a minimal mock callback object."""
+        mock = MagicMock()
+        mock.from_user.id = user_id
+        mock.id = "cb_test"
+        mock.message.message_id = message_id
+        mock.message.chat.id = chat_id or user_id
+        return mock
+
+    def test_double_confirm_creates_only_one_task(self):
+        """
+        Set up state as if the user reached confirmation,
+        invoke callback_ad_task_confirm twice.
+        Only the first invocation should create a task.
+        """
+        uid = self.uid
+        reward_nano = 5_000_000
+        quantity = 5
+        total_cost_nano = int(Decimal(str(reward_nano * quantity)) * Decimal("1.30"))
+
+        # Place user_state as if the flow reached awaiting_ad_task_confirm
+        gb.user_state[uid] = {
+            "step": "awaiting_ad_task_confirm",
+            "channel": "@testdouble",
+            "quantity": quantity,
+            "reward_nano": reward_nano,
+            "total_cost_nano": total_cost_nano,
+        }
+
+        call1 = self._make_call(uid)
+
+        # Patch create_advertiser_task to track calls
+        original_fn = gb.create_advertiser_task
+        call_count = [0]
+        created_ids = []
+
+        def spy_create(**kwargs):
+            call_count[0] += 1
+            tid = original_fn(**kwargs)
+            if tid is not None:
+                self._tasks_created.append(tid)
+                created_ids.append(tid)
+            return tid
+
+        with patch.object(gb, "create_advertiser_task", side_effect=spy_create):
+            with patch.object(gb, "bot") as mock_bot:
+                mock_bot.answer_callback_query = MagicMock()
+                mock_bot.send_message = MagicMock()
+
+                # First confirmation
+                gb.callback_ad_task_confirm(call1)
+                self.assertEqual(call_count[0], 1, "create_advertiser_task should be called once")
+                self.assertTrue(user_state_cleared(uid),
+                                "State should be cleared after first confirmation")
+
+                # Simulate a very rapid second click arriving
+                # (state was already popped, so step is gone)
+                call2 = self._make_call(uid, message_id=99902)
+                gb.callback_ad_task_confirm(call2)
+                self.assertEqual(call_count[0], 1,
+                                 "create_advertiser_task must NOT be called a second time")
+
+        # Exactly one task in the database
+        with gb.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT id FROM manual_tasks WHERE advertiser_id = ?"
+                " AND target_reference = '@testdouble'",
+                (uid,),
+            ).fetchall()
+        self.assertEqual(len(rows), 1,
+                         "Exactly one task should exist after double-confirm")
+
+    def test_second_confirm_returns_stale(self):
+        """Second confirm after state cleared must send stale callback."""
+        uid = self.uid
+        gb.user_state.pop(uid, None)  # no state
+
+        call = self._make_call(uid)
+        with patch.object(gb, "create_advertiser_task") as mock_create:
+            with patch.object(gb, "bot") as mock_bot:
+                mock_bot.answer_callback_query = MagicMock()
+                mock_bot.send_message = MagicMock()
+                gb.callback_ad_task_confirm(call)
+
+                mock_create.assert_not_called()
+                mock_bot.answer_callback_query.assert_called_once()
+                # Verify the stale warning was sent
+                args = mock_bot.answer_callback_query.call_args
+                self.assertIn("انتهت", str(args))
+
+
+def user_state_cleared(uid):
+    return uid not in gb.user_state or gb.user_state.get(uid, {}).get("step") != "awaiting_ad_task_confirm"
+
+
 if __name__ == "__main__":
     unittest.main()
