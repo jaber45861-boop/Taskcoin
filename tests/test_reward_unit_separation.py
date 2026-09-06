@@ -50,7 +50,7 @@ _ra._live_egp_per_usd = Decimal("50")
 def _add_user(uid, balance_nano=0, activated=1):
     with gb.get_connection() as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO users "
+            "INSERT OR REPLACE INTO users "
             "(user_id, first_name, balance_usd_nano, activation_status) "
             "VALUES (?, 'Test', ?, ?)",
             (uid, balance_nano, activated),
@@ -436,6 +436,144 @@ class TestRewardNanoHelper(unittest.TestCase):
                 "SELECT NULL AS reward_usd_nano, 5000 AS reward_points"
             ).fetchone()
         self.assertEqual(gb._task_reward_nano(row), gb.egp_cents_to_wallet_nano(5000))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 8. callback_claim_manual NameError regression (Micro-Order 10A)
+# ══════════════════════════════════════════════════════════════════════════════
+class TestCallbackClaimManualNameError(unittest.TestCase):
+    """Prove callback_claim_manual no longer crashes with NameError on 'reward'."""
+
+    _counter = 0
+
+    def setUp(self):
+        # Use unique IDs per test to avoid INSERT OR IGNORE collisions
+        TestCallbackClaimManualNameError._counter += 1
+        c = TestCallbackClaimManualNameError._counter
+        self.worker = 94000 + c * 100 + 1
+        self.adv = 94000 + c * 100 + 2
+        _add_user(self.worker, balance_nano=0)
+        _add_user(self.adv, balance_nano=100_000_000)
+
+    def tearDown(self):
+        _cleanup_user(self.worker)
+        _cleanup_user(self.adv)
+        _cleanup_completions(self.worker)
+
+    def _make_call(self, user_id, task_id, message_id=88801):
+        from unittest.mock import MagicMock
+        mock = MagicMock()
+        mock.from_user.id = user_id
+        mock.id = "cb_claim_test"
+        mock.message.message_id = message_id
+        mock.message.chat.id = user_id
+        mock.data = f"claim_manual_{task_id}"
+        return mock
+
+    @patch.object(gb, "require_active_account", return_value=True)
+    @patch.object(gb, "account_access_allowed", return_value=True)
+    @patch.object(gb, "is_subscribed", return_value=True)
+    @patch.object(gb, "bot")
+    def test_advertiser_claim_no_nameerror(self, mock_bot, _mock_sub, _mock_acc, _mock_active):
+        """Successful non-proof advertiser claim must not crash with NameError."""
+        reward = 5_000_000
+        tid = gb.create_advertiser_task(
+            advertiser_id=self.adv,
+            title="NameError test",
+            task_link="https://t.me/nerr",
+            reward_nano=reward,
+            quantity=3,
+            task_type="telegram_channel",
+            target_reference="@nerrchannel",
+        )
+        self.assertIsNotNone(tid)
+        call = self._make_call(self.worker, tid)
+        # If format_balance(reward) were still present, this would raise NameError
+        gb.callback_claim_manual(call)
+        # Worker should have received the reward
+        bal = _get_balance(self.worker)
+        self.assertEqual(bal["balance_usd_nano"], reward)
+        # bot.send_message should have been called (success message)
+        mock_bot.send_message.assert_called()
+        # Verify the success message contains the correct reward display
+        send_args = mock_bot.send_message.call_args
+        msg_text = send_args[0][1] if send_args[0] else send_args[1].get("text", "")
+        self.assertIn("0.005", msg_text)
+
+    @patch.object(gb, "require_active_account", return_value=True)
+    @patch.object(gb, "account_access_allowed", return_value=True)
+    @patch.object(gb, "is_subscribed", return_value=True)
+    @patch.object(gb, "bot")
+    def test_admin_claim_no_nameerror(self, mock_bot, _mock_sub, _mock_acc, _mock_active):
+        """Successful admin claim must also not crash."""
+        tid = gb.create_manual_task(
+            title="Admin NameError test",
+            task_link="https://t.me/admnerr",
+            reward_points=5000,  # EGP cents
+            quantity=2,
+            task_type="telegram_channel",
+            target_reference="@admnerrchannel",
+        )
+        call = self._make_call(self.worker, tid)
+        gb.callback_claim_manual(call)
+        bal = _get_balance(self.worker)
+        expected = gb.egp_cents_to_wallet_nano(5000)
+        self.assertEqual(bal["balance_usd_nano"], expected)
+        mock_bot.send_message.assert_called()
+        send_args = mock_bot.send_message.call_args
+        msg_text = send_args[0][1] if send_args[0] else send_args[1].get("text", "")
+        # 5000 EGP cents at 50 EGP/USD = $1.00
+        self.assertIn("1.0", msg_text)
+
+    @patch.object(gb, "require_active_account", return_value=True)
+    @patch.object(gb, "account_access_allowed", return_value=True)
+    @patch.object(gb, "is_subscribed", return_value=False)
+    @patch.object(gb, "bot")
+    def test_failed_claim_no_payout(self, mock_bot, _mock_sub, _mock_acc, _mock_active):
+        """A failed claim (not_subscribed) must not produce a payout."""
+        reward = 5_000_000
+        tid = gb.create_advertiser_task(
+            advertiser_id=self.adv,
+            title="Fail test",
+            task_link="https://t.me/fail",
+            reward_nano=reward,
+            quantity=1,
+            task_type="telegram_channel",
+            target_reference="@failchannel",
+        )
+        call = self._make_call(self.worker, tid)
+        gb.callback_claim_manual(call)
+        bal = _get_balance(self.worker)
+        self.assertEqual(bal["balance_usd_nano"], 0)
+        # answer_callback_query should have been called with error message
+        mock_bot.answer_callback_query.assert_called()
+
+    @patch.object(gb, "require_active_account", return_value=True)
+    @patch.object(gb, "account_access_allowed", return_value=True)
+    @patch.object(gb, "is_subscribed", return_value=True)
+    @patch.object(gb, "bot")
+    def test_advertiser_display_from_reward_usd_nano(self, mock_bot, _mock_sub, _mock_acc, _mock_active):
+        """Advertiser task success message shows reward from reward_usd_nano, not reward_points."""
+        reward = 7_000_000  # $0.007
+        tid = gb.create_advertiser_task(
+            advertiser_id=self.adv,
+            title="Display test",
+            task_link="https://t.me/disp",
+            reward_nano=reward,
+            quantity=2,
+            task_type="telegram_channel",
+            target_reference="@dispchannel",
+        )
+        call = self._make_call(self.worker, tid)
+        gb.callback_claim_manual(call)
+        # Verify the callback query message shows correct reward
+        cb_args = mock_bot.answer_callback_query.call_args
+        cb_text = cb_args[0][1] if len(cb_args[0]) > 1 else cb_args[1].get("text", "")
+        self.assertIn("0.007", cb_text)
+        # Verify the success message also shows correct reward
+        send_args = mock_bot.send_message.call_args
+        msg_text = send_args[0][1] if send_args[0] else send_args[1].get("text", "")
+        self.assertIn("0.007", msg_text)
 
 
 if __name__ == "__main__":

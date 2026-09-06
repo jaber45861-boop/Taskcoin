@@ -10187,7 +10187,7 @@ def callback_claim_manual(call):
         bot.send_message(
             call.message.chat.id,
             "✅ <b>تم تنفيذ المهمة!</b>\n\n"
-            f"تمت إضافة <b>{format_balance(reward)}</b> إلى رصيدك.\n"
+            f"تمت إضافة <b>{_task_reward_display(task) if task else format_balance(0)}</b> إلى رصيدك.\n"
             f"🏆 <b>رصيدك الحالي:</b> {balance_text(updated)}",
         )
         return
