@@ -448,10 +448,6 @@ def smm_sell_price_usd_nano(rate_per_1k_usd, margin_pct=None) -> int:
 # Task-creation eligibility threshold: wallet >= $0.01
 TASK_CREATION_MIN_BALANCE_USD_NANO = 10_000_000
 
-# Task Expiration Timer (admin-internal only)
-# Server-side absolute deadline. Users never see this.
-TASK_EXPIRY_HOURS = 24
-
 
 def has_minimum_usd_nano_balance(balance_usd_nano: int) -> bool:
     """Return True when balance meets the task-creation eligibility threshold.
@@ -3255,17 +3251,11 @@ def create_referral_task(
 ) -> int | None:
     """يخصم تكلفة الطلب ويحفظه في معاملة SQLite واحدة.
 
-    Internal tasks (default) have no expiration timer.
-    External tasks may pass task_origin="external" with an explicit expires_at.
     """
     if quantity is None:
         quantity = get_service_quantity(REFERRAL_SERVICE_KEY)
     if points_spent is None:
         points_spent = get_service_price(REFERRAL_SERVICE_KEY)
-    # Internal tasks: no timer.  External tasks set expires_at explicitly.
-    expires_at = None if task_origin == "internal" else (
-        (datetime.utcnow() + timedelta(hours=TASK_EXPIRY_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
-    )
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         cur = conn.execute(
@@ -3279,9 +3269,9 @@ def create_referral_task(
         task = conn.execute(
             "INSERT INTO referral_tasks "
             "(buyer_id, referral_link, quantity_requested, quantity_remaining, "
-            "points_spent, amount_cents, expires_at, task_state, task_origin) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'AVAILABLE', ?)",
-            (buyer_id, referral_link, quantity, quantity, points_spent, points_spent, expires_at, task_origin),
+            "points_spent, amount_cents, task_state, task_origin) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'AVAILABLE', ?)",
+            (buyer_id, referral_link, quantity, quantity, points_spent, points_spent, task_origin),
         )
         task_id = int(task.lastrowid)
         conn.commit()
@@ -3293,7 +3283,7 @@ def get_active_referral_tasks(user_id: int, limit: int = 10):
     with get_connection() as conn:
         return conn.execute(
             "SELECT * FROM referral_tasks "
-            "WHERE status = 'active' AND quantity_remaining > 0 " "AND buyer_id != ? " "AND (task_state IS NULL OR task_state = 'AVAILABLE') " "AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) "
+            "WHERE status = 'active' AND quantity_remaining > 0 " "AND buyer_id != ? "
             "ORDER BY created_at ASC, id ASC LIMIT ?",
             (user_id, limit),
         ).fetchall()
@@ -3308,24 +3298,13 @@ def claim_referral_task(task_id: int, worker_id: int) -> str:
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         task = conn.execute(
-            "SELECT buyer_id, quantity_remaining, status, " "task_state, expires_at FROM referral_tasks "
+            "SELECT buyer_id, quantity_remaining, status FROM referral_tasks "
             "WHERE id = ?",
             (task_id,),
         ).fetchone()
         if task is None or task["status"] != "active" or task["quantity_remaining"] <= 0:
             return "unavailable"
-        # Admin-internal: expired/deleted tasks are not claimable
-        ts = task["task_state"] if "task_state" in task.keys() else None
-        ea = task["expires_at"] if "expires_at" in task.keys() else None
-        if ts in ("EXPIRED", "DELETED"):
-            return "unavailable"
-        if ea is not None:
-            try:
-                exp_dt = datetime.strptime(str(ea), "%Y-%m-%d %H:%M:%S")
-                if datetime.utcnow() > exp_dt:
-                    return "unavailable"
-            except (ValueError, TypeError):
-                pass
+        # Timer removed — no expiration check
         if task["buyer_id"] == worker_id:
             return "own_task"
 
@@ -3682,25 +3661,19 @@ def create_manual_task(
 ) -> int:
     """Create a manual task.
 
-    Internal tasks (default) have no expiration timer.
-    External tasks may pass task_origin="external" with an explicit expires_at.
     """
     if task_type not in {"social_manual", "telegram_channel"}:
         raise ValueError("Unsupported manual task type")
     target_reference = target_reference or task_link
-    # Internal tasks: no timer.  External tasks set expires_at explicitly.
-    expires_at = None if task_origin == "internal" else (
-        (datetime.utcnow() + timedelta(hours=TASK_EXPIRY_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
-    )
     with get_connection() as conn:
         task = conn.execute(
             "INSERT INTO manual_tasks "
             "(title, task_link, task_type, target_reference, task_instructions, "
             "reward_points, quantity_requested, quantity_remaining, "
-            "expires_at, task_state, task_origin) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'AVAILABLE', ?)",
+            "task_state, task_origin) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'AVAILABLE', ?)",
             (title, task_link, task_type, target_reference, task_instructions,
-             reward_points, quantity, quantity, expires_at, task_origin),
+             reward_points, quantity, quantity, task_origin),
         )
         return int(task.lastrowid)
 
@@ -3795,7 +3768,7 @@ def get_active_manual_tasks(limit: int = 10):
     with get_connection() as conn:
         return conn.execute(
             "SELECT * FROM manual_tasks "
-            "WHERE status = 'active' AND quantity_remaining > 0 " "AND (task_state IS NULL OR task_state = 'AVAILABLE') " "AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) " "ORDER BY created_at ASC, id ASC LIMIT ?",
+            "WHERE status = 'active' AND quantity_remaining > 0 " "ORDER BY created_at ASC, id ASC LIMIT ?",
             (limit,),
         ).fetchall()
 
@@ -3806,7 +3779,7 @@ def get_pending_manual_tasks(user_id: int, limit: int = 50):
         return conn.execute(
             "SELECT t.* FROM manual_tasks t "
             "WHERE ("
-            "  (t.status = 'active' AND t.quantity_remaining > 0 " "   AND (t.task_state IS NULL OR t.task_state = 'AVAILABLE') " "   AND (t.expires_at IS NULL OR t.expires_at > CURRENT_TIMESTAMP)) "
+            "  (t.status = 'active' AND t.quantity_remaining > 0)"
             "  OR EXISTS ("
             "    SELECT 1 FROM manual_task_reviews r "
             "    WHERE r.user_id = ? AND r.task_id = t.id "
@@ -4244,17 +4217,6 @@ def claim_manual_task(task_id: int, worker_id: int) -> str:
         if task is None or task["status"] != "active" or task["quantity_remaining"] <= 0:
             return "unavailable"
         # Admin-internal: expired/deleted tasks are not claimable
-        ts = task["task_state"] if "task_state" in task.keys() else None
-        ea = task["expires_at"] if "expires_at" in task.keys() else None
-        if ts in ("EXPIRED", "DELETED"):
-            return "unavailable"
-        if ea is not None:
-            try:
-                exp_dt = datetime.strptime(str(ea), "%Y-%m-%d %H:%M:%S")
-                if datetime.utcnow() > exp_dt:
-                    return "unavailable"
-            except (ValueError, TypeError):
-                pass
         inserted = conn.execute(
             "INSERT OR IGNORE INTO task_completions (user_id, task_key) VALUES (?, ?)",
             (worker_id, task_key),
@@ -5571,33 +5533,6 @@ def require_active_account(call) -> bool:
 
 
 
-# === Admin Task Timer Management (admin-internal only) ===
-
-def _admin_task_timer_summary(task_row, table_name):
-    state = task_row["task_state"] if "task_state" in task_row.keys() else "AVAILABLE"
-    expires_at = task_row["expires_at"] if "expires_at" in task_row.keys() else None
-    remaining_qty = task_row["quantity_remaining"]
-    emojis = {"AVAILABLE": "\u2705", "EXPIRED": "\u274c", "DELETED": "\U0001f5d1\ufe0f"}
-    e = emojis.get(state, "?")
-    parts = ["  Status: {} {}".format(e, state)]
-    if expires_at:
-        try:
-            exp_dt = datetime.strptime(str(expires_at), "%Y-%m-%d %H:%M:%S")
-            now = datetime.utcnow()
-            if state == "AVAILABLE" and now < exp_dt:
-                delta = exp_dt - now
-                h, rem = divmod(int(delta.total_seconds()), 3600)
-                parts.append("  Expires in: {}h {}m".format(h, rem // 60))
-            else:
-                parts.append("  Deadline: {}".format(expires_at))
-        except (ValueError, TypeError):
-            parts.append("  Deadline: {}".format(expires_at))
-    else:
-        parts.append("  No deadline (legacy)")
-    parts.append("  Remaining: {}".format(remaining_qty))
-    return "\n".join(parts)
-
-
 def get_all_tasks_for_admin(limit=20):
     tasks = []
     with get_connection() as conn:
@@ -5615,36 +5550,6 @@ def get_all_tasks_for_admin(limit=20):
     return tasks[:limit]
 
 
-def extend_task_timer(task_id, table_name, extra_hours=24):
-    if table_name not in ("referral_tasks", "manual_tasks"):
-        return False
-    with get_connection() as conn:
-        task = conn.execute(
-            "SELECT id, expires_at, task_state FROM {} WHERE id = ?".format(table_name),
-            (task_id,),
-        ).fetchone()
-        if task is None:
-            return False
-        from datetime import timedelta
-        now = datetime.utcnow()
-        ea = task["expires_at"] if "expires_at" in task.keys() else None
-        if ea:
-            try:
-                old_exp = datetime.strptime(str(ea), "%Y-%m-%d %H:%M:%S")
-                base = max(now, old_exp)
-            except (ValueError, TypeError):
-                base = now
-        else:
-            base = now
-        new_expiry = (base + timedelta(hours=extra_hours)).strftime("%Y-%m-%d %H:%M:%S")
-        conn.execute(
-            "UPDATE {} SET expires_at = ?, task_state = 'AVAILABLE' WHERE id = ?".format(table_name),
-            (new_expiry, task_id),
-        )
-        conn.commit()
-        return True
-
-
 def delete_task_admin(task_id, table_name):
     if table_name not in ("referral_tasks", "manual_tasks"):
         return False
@@ -5655,10 +5560,6 @@ def delete_task_admin(task_id, table_name):
         )
         conn.commit()
         return True
-
-
-def reactivate_task_admin(task_id, table_name, extra_hours=24):
-    return extend_task_timer(task_id, table_name, extra_hours)
 
 
 def admin_keyboard() -> InlineKeyboardMarkup:
@@ -9063,19 +8964,18 @@ def callback_admin_manage_tasks(call):
     for t in tasks:
         tid = t["id"]
         tbl = t["task_source"]
-        summary = _admin_task_timer_summary(t, tbl)
+        remaining = t.get("quantity_remaining", "?")
+        summary = "  Remaining: {}".format(remaining)
         label = "\u0627\u062d\u0627\u0644\u0629" if tbl == "referral" else "\u064a\u062f\u0648\u064a\u0629"
         text += "<b>{} #{}</b>\n{}\n\n".format(label, tid, summary)
     markup = InlineKeyboardMarkup()
     for t in tasks[:5]:
         tid = t["id"]
         tbl = t["task_source"]
-        state = t.get("task_state", "AVAILABLE") if "task_state" in t.keys() else "AVAILABLE"
-        icon = "\u2705" if state == "AVAILABLE" else "\u274c"
         prefix = "\u0627\u062d\u0627\u0644\u0629" if tbl == "referral" else "\u064a\u062f\u0648\u064a\u0629"
         markup.add(InlineKeyboardButton(
             "{} #{} {} \u2014 \u062a\u0645\u062f\u064a\u062f".format(prefix, tid, icon),
-            callback_data="admin_extend_task_{}_{}".format(tbl, tid),
+            callback_data="admin_delete_task_{}_{}".format(tbl, tid),
         ))
     markup.add(InlineKeyboardButton("\u0628\u0627\u0642\u0629 \u0627\u0644\u062a\u062d\u0643\u0645", callback_data="admin_panel"))
     bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
@@ -9089,34 +8989,6 @@ def _parse_task_cb(data, prefix):
     elif rest.startswith("manual_tasks_"):
         return "manual_tasks", int(rest[len("manual_tasks_"):])
     return None, None
-
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("admin_extend_task_") and is_admin(c.from_user.id))
-def callback_admin_extend_task(call):
-    tbl, tid = _parse_task_cb(call.data, "admin_extend_task_")
-    if tbl is None:
-        bot.answer_callback_query(call.id, "\u26a0\ufe0f", show_alert=True)
-        return
-    ok = extend_task_timer(tid, tbl, 24)
-    bot.answer_callback_query(call.id, "\u23f0" if ok else "\u26a0\ufe0f", show_alert=True)
-    try:
-        callback_admin_manage_tasks(call)
-    except Exception:
-        pass
-
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("admin_reactivate_task_") and is_admin(c.from_user.id))
-def callback_admin_reactivate_task(call):
-    tbl, tid = _parse_task_cb(call.data, "admin_reactivate_task_")
-    if tbl is None:
-        bot.answer_callback_query(call.id, "\u26a0\ufe0f", show_alert=True)
-        return
-    ok = reactivate_task_admin(tid, tbl, 24)
-    bot.answer_callback_query(call.id, "\u267b\ufe0f" if ok else "\u26a0\ufe0f", show_alert=True)
-    try:
-        callback_admin_manage_tasks(call)
-    except Exception:
-        pass
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("admin_delete_task_") and is_admin(c.from_user.id))
