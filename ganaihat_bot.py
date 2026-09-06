@@ -2043,6 +2043,14 @@ def init_db():
                 "ALTER TABLE manual_tasks ADD COLUMN task_origin TEXT "
                 "NOT NULL DEFAULT 'internal'"
             )
+        if "advertiser_id" not in manual_task_columns:
+            conn.execute(
+                "ALTER TABLE manual_tasks ADD COLUMN advertiser_id INTEGER"
+            )
+        if "total_cost_nano" not in manual_task_columns:
+            conn.execute(
+                "ALTER TABLE manual_tasks ADD COLUMN total_cost_nano INTEGER"
+            )
         conn.execute(
             "UPDATE manual_tasks SET target_reference = task_link "
             "WHERE target_reference IS NULL OR TRIM(target_reference) = ''"
@@ -3628,6 +3636,91 @@ def create_manual_task(
             (title, task_link, task_type, target_reference, task_instructions,
              reward_points, quantity, quantity, expires_at, task_origin),
         )
+        return int(task.lastrowid)
+
+
+def create_advertiser_task(
+    *,
+    advertiser_id: int,
+    title: str,
+    task_link: str,
+    reward_nano: int,
+    quantity: int,
+    task_type: str = "telegram_channel",
+    target_reference: str | None = None,
+    task_instructions: str = "",
+) -> int | None:
+    """Create an advertiser-funded internal task with atomic wallet debit.
+
+    The advertiser pays: reward_nano × quantity × 1.30 (30% platform margin).
+    Worker receives: reward_nano per successful completion.
+    Platform commission: reward_nano × quantity × 0.30.
+
+    Returns the task_id on success, None if creation fails (insufficient
+    balance, invalid input, etc.).  The wallet is never left in a
+    partially-debited state.
+
+    This function does NOT build UI, handle Telegram callbacks, or
+    change any existing admin/manual task creation path.
+    """
+    # ─── Input validation ──────────────────────────────────────────────
+    if task_type not in {"social_manual", "telegram_channel"}:
+        raise ValueError("Unsupported task type")
+    if not isinstance(reward_nano, int) or isinstance(reward_nano, bool) or reward_nano <= 0:
+        raise ValueError(f"reward_nano must be a positive int, got {reward_nano!r}")
+    if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity <= 0:
+        raise ValueError(f"quantity must be a positive int, got {quantity!r}")
+
+    # ─── Advertiser existence + activation check ───────────────────────
+    with get_connection() as conn:
+        adv = conn.execute(
+            "SELECT user_id, activation_status, balance_usd_nano FROM users WHERE user_id = ?",
+            (advertiser_id,),
+        ).fetchone()
+    if adv is None:
+        return None
+    if not adv["activation_status"]:
+        return None
+
+    # ─── $0.01 eligibility gate (not a fee — not deducted) ────────────
+    if not has_minimum_usd_nano_balance(adv["balance_usd_nano"]):
+        return None
+
+    # ─── Calculate costs ───────────────────────────────────────────────
+    # Worker pool: reward × quantity (all integer nano)
+    worker_pool_nano = reward_nano * quantity
+    # Advertiser total: worker_pool × 1.30 (30% platform margin)
+    total_cost_nano = int(
+        (Decimal(str(worker_pool_nano)) * MARGIN_MULTIPLIER)
+        .quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    )
+
+    # ─── Atomic wallet debit + task creation ───────────────────────────
+    target_reference = target_reference or task_link
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        cur = conn.execute(
+            "UPDATE users SET balance_usd_nano = balance_usd_nano - ? "
+            "WHERE user_id = ? AND balance_usd_nano >= ?",
+            (total_cost_nano, advertiser_id, total_cost_nano),
+        )
+        if cur.rowcount != 1:
+            conn.rollback()
+            return None
+
+        task = conn.execute(
+            "INSERT INTO manual_tasks "
+            "(title, task_link, task_type, target_reference, task_instructions, "
+            "reward_points, quantity_requested, quantity_remaining, "
+            "expires_at, task_state, task_origin, advertiser_id, total_cost_nano) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'AVAILABLE', 'internal', ?, ?)",
+            (
+                title, task_link, task_type, target_reference, task_instructions,
+                reward_nano, quantity, quantity,
+                advertiser_id, total_cost_nano,
+            ),
+        )
+        conn.commit()
         return int(task.lastrowid)
 
 
