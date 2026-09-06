@@ -92,6 +92,11 @@ class TestSchema(unittest.TestCase):
             cols = {r[1] for r in conn.execute("PRAGMA table_info(manual_tasks)").fetchall()}
         self.assertIn("total_cost_nano", cols)
 
+    def test_manual_tasks_has_reward_usd_nano(self):
+        with gb.get_connection() as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(manual_tasks)").fetchall()}
+        self.assertIn("reward_usd_nano", cols)
+
 
 class TestSuccessfulCreation(unittest.TestCase):
     """Advertiser with sufficient balance can create a task."""
@@ -178,8 +183,9 @@ class TestSuccessfulCreation(unittest.TestCase):
         self.assertEqual(after, before)
         _cleanup_task(tid)
 
-    def test_reward_points_stores_nano(self):
-        """reward_points column stores the nano reward for worker payout."""
+    def test_reward_usd_nano_stores_nano(self):
+        """reward_usd_nano column stores the nano reward for worker payout;
+        reward_points is 0 for advertiser tasks."""
         reward = 3_000_000
         tid = gb.create_advertiser_task(
             advertiser_id=self.uid,
@@ -191,9 +197,10 @@ class TestSuccessfulCreation(unittest.TestCase):
         self.assertIsNotNone(tid)
         with gb.get_connection() as conn:
             row = conn.execute(
-                "SELECT reward_points FROM manual_tasks WHERE id = ?", (tid,)
+                "SELECT reward_points, reward_usd_nano FROM manual_tasks WHERE id = ?", (tid,)
             ).fetchone()
-        self.assertEqual(row["reward_points"], reward)
+        self.assertEqual(row["reward_points"], 0)
+        self.assertEqual(row["reward_usd_nano"], reward)
         _cleanup_task(tid)
 
     def test_quantity_set_correctly(self):
@@ -444,12 +451,13 @@ class TestBoundaryValues(unittest.TestCase):
         self.assertIsNotNone(tid)
         with gb.get_connection() as conn:
             row = conn.execute(
-                "SELECT total_cost_nano, reward_points FROM manual_tasks WHERE id = ?",
+                "SELECT total_cost_nano, reward_points, reward_usd_nano FROM manual_tasks WHERE id = ?",
                 (tid,),
             ).fetchone()
         # 1 * 1.30 = 1.30, rounds to 1
         self.assertEqual(row["total_cost_nano"], 1)
-        self.assertEqual(row["reward_points"], 1)
+        self.assertEqual(row["reward_points"], 0)
+        self.assertEqual(row["reward_usd_nano"], 1)
         _cleanup_task(tid)
 
 

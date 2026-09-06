@@ -2051,6 +2051,10 @@ def init_db():
             conn.execute(
                 "ALTER TABLE manual_tasks ADD COLUMN total_cost_nano INTEGER"
             )
+        if "reward_usd_nano" not in manual_task_columns:
+            conn.execute(
+                "ALTER TABLE manual_tasks ADD COLUMN reward_usd_nano INTEGER"
+            )
         conn.execute(
             "UPDATE manual_tasks SET target_reference = task_link "
             "WHERE target_reference IS NULL OR TRIM(target_reference) = ''"
@@ -3603,6 +3607,30 @@ def reject_referral_task_complaint(complaint_id: int):
         return dict(complaint)
 
 
+def _task_reward_display(task_row) -> str:
+    """Return formatted USD balance for a manual_task row.
+
+    Advertiser tasks store the worker reward directly in reward_usd_nano (USD nano).
+    Admin/legacy tasks store EGP cents in reward_points and convert via egp_cents_to_wallet_nano().
+    """
+    keys = task_row.keys() if hasattr(task_row, "keys") else ()
+    if "reward_usd_nano" in keys and task_row["reward_usd_nano"]:
+        return format_balance(int(task_row["reward_usd_nano"]))
+    return format_balance(egp_cents_to_wallet_nano(task_row["reward_points"]))
+
+
+def _task_reward_nano(task_row) -> int:
+    """Return worker reward in USD nano for a manual_task row.
+
+    Advertiser tasks: reward_usd_nano is already USD nano.
+    Admin/legacy tasks: reward_points is EGP cents → convert.
+    """
+    keys = task_row.keys() if hasattr(task_row, "keys") else ()
+    if "reward_usd_nano" in keys and task_row["reward_usd_nano"]:
+        return int(task_row["reward_usd_nano"])
+    return egp_cents_to_wallet_nano(task_row["reward_points"])
+
+
 def create_manual_task(
     title: str,
     task_link: str,
@@ -3712,12 +3740,13 @@ def create_advertiser_task(
             "INSERT INTO manual_tasks "
             "(title, task_link, task_type, target_reference, task_instructions, "
             "reward_points, quantity_requested, quantity_remaining, "
-            "expires_at, task_state, task_origin, advertiser_id, total_cost_nano) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'AVAILABLE', 'internal', ?, ?)",
+            "expires_at, task_state, task_origin, advertiser_id, total_cost_nano, "
+            "reward_usd_nano) "
+            "VALUES (?, ?, ?, ?, ?, 0, ?, ?, NULL, 'AVAILABLE', 'internal', ?, ?, ?)",
             (
                 title, task_link, task_type, target_reference, task_instructions,
-                reward_nano, quantity, quantity,
-                advertiser_id, total_cost_nano,
+                quantity, quantity,
+                advertiser_id, total_cost_nano, reward_nano,
             ),
         )
         conn.commit()
@@ -3868,7 +3897,7 @@ def approve_manual_task_review(review_id: int):
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         review = conn.execute(
-            "SELECT r.*, t.reward_points, t.quantity_remaining, t.status AS task_status "
+            "SELECT r.*, t.reward_points, t.reward_usd_nano, t.quantity_remaining, t.status AS task_status "
             "FROM manual_task_reviews r "
             "JOIN manual_tasks t ON t.id = r.task_id "
             "WHERE r.id = ?",
@@ -3903,7 +3932,7 @@ def approve_manual_task_review(review_id: int):
 
         conn.execute(
             "UPDATE users SET balance_usd_nano = balance_usd_nano + ? WHERE user_id = ?",
-            (egp_cents_to_wallet_nano(review["reward_points"]), review["user_id"]),
+            (_task_reward_nano(review), review["user_id"]),
         )
         conn.execute(
             "UPDATE manual_task_reviews SET status = 'approved', "
@@ -3914,6 +3943,7 @@ def approve_manual_task_review(review_id: int):
             "user_id": review["user_id"],
             "task_id": review["task_id"],
             "reward_points": review["reward_points"],
+            "reward_usd_nano": review["reward_usd_nano"],
         }
 
 
@@ -4151,7 +4181,7 @@ def claim_manual_task(task_id: int, worker_id: int) -> str:
     task_key = f"manual_task:{task_id}"
     with get_connection() as conn:
         task = conn.execute(
-            "SELECT reward_points, quantity_remaining, status, task_type, "
+            "SELECT reward_points, reward_usd_nano, quantity_remaining, status, task_type, "
             "target_reference, task_link "
             "FROM manual_tasks WHERE id = ?",
             (task_id,),
@@ -4169,7 +4199,7 @@ def claim_manual_task(task_id: int, worker_id: int) -> str:
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         task = conn.execute(
-            "SELECT reward_points, quantity_remaining, status "
+            "SELECT reward_points, reward_usd_nano, quantity_remaining, status "
             "FROM manual_tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
@@ -4207,7 +4237,7 @@ def claim_manual_task(task_id: int, worker_id: int) -> str:
 
         conn.execute(
             "UPDATE users SET balance_usd_nano = balance_usd_nano + ? WHERE user_id = ?",
-            (egp_cents_to_wallet_nano(task["reward_points"]), worker_id),
+            (_task_reward_nano(task), worker_id),
         )
         return "claimed"
 
@@ -5440,7 +5470,7 @@ def build_activation_gate_text(user_id: int) -> str:
         for task in pending_tasks:
             text += (
                 f"• {html.escape(task['title'])} — "
-                f"<b>{format_balance(egp_cents_to_wallet_nano(task['reward_points']))}</b>\n"
+                f"<b>{_task_reward_display(task)}</b>\n"
             )
         text += "\n"
     else:
@@ -5823,7 +5853,7 @@ def build_tasks_text(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
                 f"⚙️ النوع: <b>{manual_task_type_label(task)}</b>\n"
                 f"🎯 الهدف: <code>{html.escape(manual_task_target(task))}</code>\n"
                 f"📋 الشروط: {html.escape(manual_task_instructions(task))}\n"
-                f"🎁 المكافأة: <b>{format_balance(egp_cents_to_wallet_nano(task['reward_points']))}</b>\n"
+                f"🎁 المكافأة: <b>{_task_reward_display(task)}</b>\n"
                 f"📊 المتبقي: <b>{task['quantity_remaining']}</b> تنفيذ\n\n"
             )
 
@@ -6156,7 +6186,7 @@ def handle_admin_manual_review_reply(message):
         bot.send_message(
             user_id,
             "🎉 <b>تم قبول إثبات المهمة!</b>\n\n"
-            f"✅ تمت إضافة <b>{format_balance(egp_cents_to_wallet_nano(approved['reward_points']))}</b> إلى رصيدك.\n"
+            f"✅ تمت إضافة <b>{_task_reward_display(approved)}</b> إلى رصيدك.\n"
             + (
                 f"🔓 تم تفعيل حسابك وإضافة مكافأة التفعيل "
                 f"<b>{format_balance(ACTIVATION_REWARD_USD_NANO)}</b>."
@@ -6419,7 +6449,7 @@ def handle_manual_task_proof(message):
         f"• <b>المعرف الرقمي:</b> <code>{user_id}</code>\n"
         f"• <b>اسم المستخدم:</b> {display_name}\n"
         f"• <b>حساب Telegram:</b> {username}\n"
-        f"• <b>المكافأة:</b> <b>{format_balance(egp_cents_to_wallet_nano(task['reward_points']))}</b>\n\n"
+        f"• <b>المكافأة:</b> <b>{_task_reward_display(task)}</b>\n\n"
         "↩️ رد على هذه الرسالة بكلمة <b>تم</b> أو <b>مقبول</b> لاعتماد المهمة."
     )
     try:
@@ -10082,13 +10112,12 @@ def callback_claim_manual(call):
     result = claim_manual_task(task_id, user_id)
     if result == "claimed":
         task = get_manual_task(task_id)
-        reward = task["reward_points"] if task else 0
         was_active = is_account_active(user_id)
         activated = not was_active and activate_user(user_id)
         updated = get_user(user_id)
         bot.answer_callback_query(
             call.id,
-            f"🎉 تم التحقق! حصلتَ على {format_balance(reward)}.",
+            f"🎉 تم التحقق! حصلتَ على {_task_reward_display(task) if task else format_balance(0)}.",
             show_alert=True,
         )
         if activated or (was_active and account_access_allowed(user_id)):
