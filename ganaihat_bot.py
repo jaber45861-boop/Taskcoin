@@ -2089,6 +2089,15 @@ def init_db():
             conn.execute(
                 "ALTER TABLE manual_tasks ADD COLUMN reward_usd_nano INTEGER"
             )
+        if "repeat_policy" not in manual_task_columns:
+            conn.execute(
+                "ALTER TABLE manual_tasks ADD COLUMN repeat_policy TEXT "
+                "NOT NULL DEFAULT 'one_time'"
+            )
+        if "repeat_hours" not in manual_task_columns:
+            conn.execute(
+                "ALTER TABLE manual_tasks ADD COLUMN repeat_hours INTEGER"
+            )
         conn.execute(
             "UPDATE manual_tasks SET target_reference = task_link "
             "WHERE target_reference IS NULL OR TRIM(target_reference) = ''"
@@ -3675,22 +3684,27 @@ def create_manual_task(
     task_instructions: str = "",
     *,
     task_origin: str = "internal",
+    repeat_policy: str = "one_time",
+    repeat_hours: int | None = None,
 ) -> int:
-    """Create a manual task.
-
-    """
+    """Create a manual task."""
     if task_type not in {"social_manual", "telegram_channel"}:
         raise ValueError("Unsupported manual task type")
+    if repeat_policy not in {"one_time", "repeatable"}:
+        raise ValueError(f"Invalid repeat_policy: {repeat_policy!r}")
+    if repeat_policy == "repeatable" and (not repeat_hours or repeat_hours <= 0):
+        raise ValueError("repeatable tasks require repeat_hours > 0")
     target_reference = target_reference or task_link
     with get_connection() as conn:
         task = conn.execute(
             "INSERT INTO manual_tasks "
             "(title, task_link, task_type, target_reference, task_instructions, "
             "reward_points, quantity_requested, quantity_remaining, "
-            "task_state, task_origin) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'AVAILABLE', ?)",
+            "task_state, task_origin, repeat_policy, repeat_hours) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'AVAILABLE', ?, ?, ?)",
             (title, task_link, task_type, target_reference, task_instructions,
-             reward_points, quantity, quantity, task_origin),
+             reward_points, quantity, quantity, task_origin,
+             repeat_policy, repeat_hours),
         )
         return int(task.lastrowid)
 
@@ -4305,7 +4319,32 @@ def claim_manual_task(task_id: int, worker_id: int) -> str:
         ).fetchone()
         if task is None or task["status"] != "active" or task["quantity_remaining"] <= 0:
             return "unavailable"
-        # Admin-internal: expired/deleted tasks are not claimable
+        # Check repeat policy: one-time tasks block re-execution; repeatable
+        # tasks allow re-execution after the cooldown from last completion.
+        task_row = conn.execute(
+            "SELECT repeat_policy, repeat_hours FROM manual_tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        repeat_policy = task_row["repeat_policy"] if task_row else "one_time"
+        repeat_hours = task_row["repeat_hours"] if task_row else None
+        if repeat_policy == "repeatable" and repeat_hours:
+            last_done = conn.execute(
+                "SELECT done_at FROM task_completions "
+                "WHERE user_id = ? AND task_key = ? ORDER BY done_at DESC LIMIT 1",
+                (worker_id, task_key),
+            ).fetchone()
+            if last_done is not None:
+                cooldown_check = conn.execute(
+                    "SELECT datetime(?, '+' || ? || ' hours') > CURRENT_TIMESTAMP AS blocked",
+                    (last_done["done_at"], repeat_hours),
+                ).fetchone()
+                if cooldown_check and cooldown_check["blocked"]:
+                    return "repeat_cooldown"
+            # Cooldown passed: clear old completion so the slot can be re-used.
+            conn.execute(
+                "DELETE FROM task_completions WHERE user_id = ? AND task_key = ?",
+                (worker_id, task_key),
+            )
         inserted = conn.execute(
             "INSERT OR IGNORE INTO task_completions (user_id, task_key) VALUES (?, ?)",
             (worker_id, task_key),
@@ -7558,18 +7597,133 @@ def handle_manual_task_quantity(message):
         return
 
     state = user_state.get(admin_id, {})
+    state["step"] = "awaiting_manual_task_repeat_policy"
+    state["quantity"] = quantity
+    bot.send_message(
+        admin_id,
+        "✅ تم حفظ الكمية.\n\n"
+        "هل هذه المهمة قابلة للتكرار؟\n\n"
+        "• <b>مرة واحدة فقط</b> — لا يمكن تنفيذها مرة أخرى بعد الإكمال.\n"
+        "• <b>قابلة للتكرار</b> — يمكن تنفيذها مجدداً بعد فترة.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("1️⃣ مرة واحدة فقط", callback_data="repeat_one_time")],
+            [InlineKeyboardButton("🔄 قابلة للتكرار", callback_data="repeat_select_hours")],
+            [InlineKeyboardButton("❌ إلغاء", callback_data="admin_panel")],
+        ]),
+    )
+
+
+# ─── Repeat policy selection for admin task creation ─────────────────────────
+
+@bot.callback_query_handler(
+    func=lambda call: call.data in {"repeat_one_time", "repeat_select_hours"}
+    and is_admin(call.from_user.id)
+)
+def callback_repeat_policy_choice(call):
+    admin_id = call.from_user.id
+    state = user_state.get(admin_id, {})
+    if state.get("step") != "awaiting_manual_task_repeat_policy":
+        bot.answer_callback_query(call.id, "⚠️ انتهت الجلسة.", show_alert=True)
+        return
+
+    if call.data == "repeat_one_time":
+        state["repeat_policy"] = "one_time"
+        state["repeat_hours"] = None
+        _finalize_admin_task(admin_id, call)
+        return
+
+    # repeatable → ask for hours
+    state["step"] = "awaiting_manual_task_repeat_hours"
+    bot.edit_message_text(
+        "🔄 <b>فترة التكرار</b>\n\n"
+        "اختر فترة التكرار بعد نجاح التنفيذ:",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏰ 24 ساعة", callback_data="repeat_hours_24")],
+            [InlineKeyboardButton("⏰ 48 ساعة", callback_data="repeat_hours_48")],
+            [InlineKeyboardButton("✏️ فترة مخصصة", callback_data="repeat_hours_custom")],
+            [InlineKeyboardButton("❌ إلغاء", callback_data="admin_panel")],
+        ]),
+    )
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith("repeat_hours_")
+    and is_admin(call.from_user.id)
+)
+def callback_repeat_hours_choice(call):
+    admin_id = call.from_user.id
+    state = user_state.get(admin_id, {})
+    if state.get("step") != "awaiting_manual_task_repeat_hours":
+        bot.answer_callback_query(call.id, "⚠️ انتهت الجلسة.", show_alert=True)
+        return
+
+    if call.data == "repeat_hours_custom":
+        state["step"] = "awaiting_manual_task_repeat_custom_hours"
+        bot.edit_message_text(
+            "✏️ <b>فترة مخصصة</b>\n\n"
+            "أرسل عدد الساعات بعد الإكمال قبل السماح بإعادة التنفيذ\n"
+            "(مثلاً: 6 أو 10 أو 12):",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("❌ إلغاء", callback_data="admin_panel"),
+            ]]),
+        )
+        bot.answer_callback_query(call.id)
+        return
+
+    hours = int(call.data.split("_")[-1])
+    state["repeat_policy"] = "repeatable"
+    state["repeat_hours"] = hours
+    _finalize_admin_task(admin_id, call)
+
+
+@bot.message_handler(
+    func=lambda m: is_admin(m.from_user.id)
+    and user_state.get(m.from_user.id, {}).get("step")
+    == "awaiting_manual_task_repeat_custom_hours"
+)
+def handle_manual_task_repeat_custom_hours(message):
+    admin_id = message.from_user.id
+    try:
+        hours = int((message.text or "").strip())
+        if hours <= 0:
+            raise ValueError
+    except ValueError:
+        bot.send_message(
+            admin_id,
+            "⚠️ غير صحيح. أرسل رقماً موجباً بالساعات، أو /admin للإلغاء.",
+        )
+        return
+    state = user_state.get(admin_id, {})
+    state["repeat_policy"] = "repeatable"
+    state["repeat_hours"] = hours
+    _finalize_admin_task(admin_id)
+
+
+def _finalize_admin_task(admin_id: int, call=None):
+    state = user_state.get(admin_id, {})
     task_id = create_manual_task(
         title=state["title"],
         task_link=state["task_link"],
         reward_points=state["reward_points"],
-        quantity=quantity,
+        quantity=state["quantity"],
         task_type=state.get("task_type", "social_manual"),
         target_reference=state.get("target_reference", state["task_link"]),
         task_instructions=state.get("task_instructions", ""),
+        repeat_policy=state.get("repeat_policy", "one_time"),
+        repeat_hours=state.get("repeat_hours"),
     )
     user_state.pop(admin_id, None)
-    bot.send_message(
-        admin_id,
+    repeat_label = (
+        "مرة واحدة فقط"
+        if state.get("repeat_policy") == "one_time"
+        else f"قابلة للتكرار كل {state.get('repeat_hours', '?')} ساعة"
+    )
+    msg = (
         "✅ <b>تمت إضافة المهمة بنجاح</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"🆔 رقم المهمة: <code>{task_id}</code>\n"
@@ -7578,10 +7732,21 @@ def handle_manual_task_quantity(message):
         f"🎯 الهدف: <code>{html.escape(state.get('target_reference', state['task_link']))}</code>\n"
         f"📋 الشروط: {html.escape(state.get('task_instructions', ''))}\n"
         f"🎁 المكافأة: <b>{format_balance(state['reward_points'])}</b>\n"
-        f"📊 الكمية: <b>{quantity}</b> تنفيذ\n\n"
+        f"📊 الكمية: <b>{state['quantity']}</b> تنفيذ\n"
+        f"🔁 التكرار: <b>{repeat_label}</b>\n\n"
         "ستظهر المهمة الآن في «المهام اليومية».",
-        reply_markup=admin_keyboard(),
     )
+    if call is not None:
+        try:
+            bot.edit_message_text(
+                msg, chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=admin_keyboard(),
+            )
+        except Exception:
+            bot.send_message(admin_id, msg, reply_markup=admin_keyboard())
+    else:
+        bot.send_message(admin_id, msg, reply_markup=admin_keyboard())
 
 
 @bot.message_handler(
@@ -10155,6 +10320,7 @@ def callback_claim_manual(call):
 
     messages = {
         "already_done": "✅ لقد نفذت هذه المهمة واستلمت مكافأتها مسبقاً.",
+        "repeat_cooldown": "⏳ هذه المهمة قابلة للتكرار. يرجى الانتظار حتى تنتهي فترة التكرار.",
         "unavailable": "⚠️ انتهت كمية هذه المهمة أو لم تعد متاحة.",
         "proof_required": "📸 أرسل صورة لقطة الشاشة أولاً ليتم مراجعتها من الإدارة.",
         "invalid_target": "⚠️ هدف قناة Telegram غير صالح. راجع إعداد المهمة مع الإدارة.",
