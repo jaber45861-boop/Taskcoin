@@ -1,6 +1,7 @@
 """
-Tests for 15-minute reservation wiring in claim_manual_task().
+Tests for reservation wiring in claim/confirm_manual_task().
 Verifies that reservations are created, reused, exclusive, and expired correctly.
+Updated: claim reserves only, confirm completes.
 """
 import os
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "1:TEST")
@@ -50,31 +51,34 @@ def _setup_db(mod):
     conn.execute("""
         CREATE TABLE manual_tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT,
+            title TEXT NOT NULL,
             task_link TEXT,
-            task_type TEXT,
+            task_type TEXT DEFAULT 'telegram_channel',
             target_reference TEXT,
             task_instructions TEXT,
-            reward_points INTEGER DEFAULT 0,
-            reward_usd_nano INTEGER,
-            quantity_requested INTEGER DEFAULT 1,
-            quantity_remaining INTEGER DEFAULT 1,
-            expires_at TEXT,
-            task_state TEXT DEFAULT 'AVAILABLE',
-            status TEXT DEFAULT 'active',
-            task_origin TEXT DEFAULT 'internal',
-            advertiser_id INTEGER,
-            total_cost_nano INTEGER,
+            reward_points INTEGER NOT NULL DEFAULT 0,
+            reward_usd_nano INTEGER NOT NULL DEFAULT 0,
+            quantity_requested INTEGER NOT NULL DEFAULT 1,
+            quantity_remaining INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             repeat_policy TEXT DEFAULT 'one_time',
-            repeat_hours INTEGER DEFAULT NULL,
-            reservation_minutes INTEGER DEFAULT NULL
+            repeat_hours INTEGER,
+            reservation_minutes INTEGER,
+            task_state TEXT DEFAULT 'AVAILABLE',
+            task_origin TEXT DEFAULT 'internal',
+            advertiser_id INTEGER
         )
     """)
     conn.execute("""
         CREATE TABLE task_completions (
             user_id INTEGER NOT NULL,
             task_key TEXT NOT NULL,
+            reward_points INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'granted',
             done_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            deducted_points INTEGER DEFAULT 0,
+            granted_at DATETIME,
             PRIMARY KEY (user_id, task_key)
         )
     """)
@@ -88,6 +92,10 @@ def _setup_db(mod):
             status TEXT NOT NULL DEFAULT 'active'
         )
     """)
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_task_reservation_active "
+        "ON manual_task_reservations(task_id, worker_id) WHERE status = 'active'"
+    )
     conn.commit()
 
     def _conn():
@@ -96,7 +104,6 @@ def _setup_db(mod):
         return c
 
     mod.get_connection = _conn
-
     # Patch is_subscribed to always return True for tests
     mod.is_subscribed = lambda user_id, channel: True
 
@@ -136,7 +143,7 @@ def _create_user(conn, user_id, balance=1_000_000_000):
 
 
 class TestReservationWiring(unittest.TestCase):
-    """Test that reservation is properly wired into claim_manual_task."""
+    """Test that reservation is properly wired into claim/confirm."""
 
     def setUp(self):
         self.mod = _load_bot()
@@ -168,81 +175,76 @@ class TestReservationWiring(unittest.TestCase):
         self.conn.commit()
 
     def test_reservation_created_on_claim(self):
-        """Worker reserves → reservation created and marked completed after claim."""
+        """Worker reserves → active reservation created."""
         result = self.mod.claim_manual_task(self.task_id, 100)
-        self.assertEqual(result, "claimed")
-        # After claim, reservation is marked 'completed'
-        rsv = self._get_reservation(self.task_id, 'completed')
+        self.assertEqual(result, "reserved")
+        rsv = self._get_reservation(self.task_id, 'active')
         self.assertIsNotNone(rsv)
         self.assertEqual(rsv["worker_id"], 100)
 
     def test_same_worker_no_refresh(self):
         """Same worker clicks again before expiry → expires_at unchanged."""
         result1 = self.mod.claim_manual_task(self.task_id, 100)
-        self.assertEqual(result1, "claimed")
-        rsv1 = self._get_reservation(self.task_id, 'completed')
+        self.assertEqual(result1, "reserved")
+        rsv1 = self._get_reservation(self.task_id, 'active')
         self.assertIsNotNone(rsv1)
         expires1 = rsv1["expires_at"]
-        # Same worker cannot claim again (one_time + already_done)
-        # but the reservation should still exist with same expires_at
-        rsv2 = self._get_reservation(self.task_id, 'completed')
+        # Same worker reserves again → returns existing
+        result2 = self.mod.claim_manual_task(self.task_id, 100)
+        self.assertEqual(result2, "reserved")
+        rsv2 = self._get_reservation(self.task_id, 'active')
         self.assertIsNotNone(rsv2)
         self.assertEqual(rsv2["expires_at"], expires1)
 
     def test_different_worker_can_claim_with_slot_level(self):
-        """Slot-level: different worker CAN claim if slots available."""
-        # Worker 100 claims (creates reservation + completes)
+        """Slot-level: different worker CAN reserve if slots available."""
         self.mod.claim_manual_task(self.task_id, 100)
-        # Worker 200 can claim (slot-level: quantity_remaining=4 > 0)
         result = self.mod.claim_manual_task(self.task_id, 200)
-        self.assertEqual(result, "claimed")
+        self.assertEqual(result, "reserved")
 
     def test_expired_reservation_allows_new_worker(self):
         """Reservation expires → worker can reserve again if task available."""
-        # Worker 100 claims
         self.mod.claim_manual_task(self.task_id, 100)
-        # Expire the reservation
         self._expire_reservation(self.task_id, 100)
-        # Create a fresh task so there's quantity available
-        task_id2 = _create_task(self.conn, quantity_remaining=3)
-        # Worker 200 can now claim
-        result = self.mod.claim_manual_task(task_id2, 200)
-        self.assertEqual(result, "claimed")
+        # Worker 200 can now reserve
+        result = self.mod.claim_manual_task(self.task_id, 200)
+        self.assertEqual(result, "reserved")
 
     def test_reservation_expired_no_reward(self):
         """Expired reservation doesn't allow completion/reward."""
-        # Create a repeatable task to test cooldown
         task_id = _create_task(self.conn, repeat_policy="repeatable", repeat_hours=1)
-        # Worker 100 claims
         self.mod.claim_manual_task(task_id, 100)
-        # Expire reservation
         self._expire_reservation(task_id, 100)
-        # Balance before
         balance_before = self.conn.execute(
             "SELECT balance_usd_nano FROM users WHERE user_id = 100"
         ).fetchone()[0]
-        # Worker 100 tries again - cooldown blocks (1 hour hasn't passed)
-        result = self.mod.claim_manual_task(task_id, 100)
-        # Should be blocked by repeat_cooldown, not by reservation
-        self.assertIn(result, ("repeat_cooldown", "slot_held", "claimed"))
+        # Worker 100 tries to confirm but reservation expired
+        result = self.mod.confirm_manual_task(task_id, 100)
+        self.assertEqual(result, "reservation_expired")
+        balance_after = self.conn.execute(
+            "SELECT balance_usd_nano FROM users WHERE user_id = 100"
+        ).fetchone()[0]
+        self.assertEqual(balance_before, balance_after)
 
     def test_completion_ends_reservation(self):
-        """Successful completion marks reservation as completed."""
+        """Successful confirm marks reservation as completed."""
         result = self.mod.claim_manual_task(self.task_id, 100)
-        self.assertEqual(result, "claimed")
-        # Reservation is marked 'completed' after successful claim
+        self.assertEqual(result, "reserved")
+        confirm_result = self.mod.confirm_manual_task(self.task_id, 100)
+        self.assertEqual(confirm_result, "completed")
         rsv = self._get_reservation(self.task_id, 'completed')
         self.assertIsNotNone(rsv)
         self.assertEqual(rsv["status"], "completed")
         self.assertEqual(rsv["worker_id"], 100)
 
     def test_completion_during_reservation(self):
-        """Completion during reservation works normally."""
+        """Confirm during reservation works and credits reward."""
         balance_before = self.conn.execute(
             "SELECT balance_usd_nano FROM users WHERE user_id = 100"
         ).fetchone()[0]
-        result = self.mod.claim_manual_task(self.task_id, 100)
-        self.assertEqual(result, "claimed")
+        self.mod.claim_manual_task(self.task_id, 100)
+        result = self.mod.confirm_manual_task(self.task_id, 100)
+        self.assertEqual(result, "completed")
         balance_after = self.conn.execute(
             "SELECT balance_usd_nano FROM users WHERE user_id = 100"
         ).fetchone()[0]
@@ -251,25 +253,22 @@ class TestReservationWiring(unittest.TestCase):
     def test_expiry_no_repeat_cooldown(self):
         """Reservation expiry alone doesn't start repeat cooldown."""
         task_id = _create_task(self.conn, repeat_policy="repeatable", repeat_hours=1)
-        # Worker 100 claims
         self.mod.claim_manual_task(task_id, 100)
-        # Expire reservation
         self._expire_reservation(task_id, 100)
-        # Complete should still be recorded (cooldown is from done_at, not reservation)
         completions = self.conn.execute(
             "SELECT COUNT(*) as cnt FROM task_completions "
             "WHERE user_id = 100 AND task_key = ?",
             (f"manual_task:{task_id}",),
         ).fetchone()
-        self.assertEqual(completions["cnt"], 1)
+        self.assertEqual(completions["cnt"], 0)
 
     def test_repeat_policy_after_completion(self):
-        """Repeat policy works after successful completion."""
+        """Repeat policy works after successful confirm."""
         task_id = _create_task(self.conn, repeat_policy="repeatable", repeat_hours=1)
-        # First claim
-        result1 = self.mod.claim_manual_task(task_id, 100)
-        self.assertEqual(result1, "claimed")
-        # Second claim should be blocked by cooldown
+        self.mod.claim_manual_task(task_id, 100)
+        result1 = self.mod.confirm_manual_task(task_id, 100)
+        self.assertEqual(result1, "completed")
+        # Second claim blocked by cooldown
         result2 = self.mod.claim_manual_task(task_id, 100)
         self.assertEqual(result2, "repeat_cooldown")
 
@@ -278,19 +277,17 @@ class TestReservationWiring(unittest.TestCase):
         balance_before = self.conn.execute(
             "SELECT balance_usd_nano FROM users WHERE user_id = 100"
         ).fetchone()[0]
-        # First claim
-        result1 = self.mod.claim_manual_task(self.task_id, 100)
-        self.assertEqual(result1, "claimed")
+        self.mod.claim_manual_task(self.task_id, 100)
+        self.mod.confirm_manual_task(self.task_id, 100)
         balance_after1 = self.conn.execute(
             "SELECT balance_usd_nano FROM users WHERE user_id = 100"
         ).fetchone()[0]
-        # Second claim should be already_done
-        result2 = self.mod.claim_manual_task(self.task_id, 100)
-        self.assertEqual(result2, "already_done")
+        # Second confirm → reservation is completed, no active reservation
+        result2 = self.mod.confirm_manual_task(self.task_id, 100)
+        self.assertEqual(result2, "reservation_expired")
         balance_after2 = self.conn.execute(
             "SELECT balance_usd_nano FROM users WHERE user_id = 100"
         ).fetchone()[0]
-        # Balance should not have changed
         self.assertEqual(balance_after1, balance_after2)
 
 

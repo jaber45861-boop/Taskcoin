@@ -4320,7 +4320,16 @@ def reject_user_ad(ad_id: int):
 
 
 def claim_manual_task(task_id: int, worker_id: int) -> str:
-    """يمنح مكافأة قناة Telegram بعد التحقق؛ المهام الاجتماعية تحتاج صورة."""
+    """Reserve (or immediately complete) a manual task for a worker.
+
+    When the task has reservation_minutes > 0 the worker's click only creates
+    a reservation and returns 'reserved'.  The actual completion (INSERT into
+    task_completions, quantity decrement, reward credit) happens later via
+    confirm_manual_task().
+
+    When the task has no reservation timer (NULL/0) the claim is immediate -
+    this preserves backward-compatible behaviour for tasks without a timer.
+    """
     task_key = f"manual_task:{task_id}"
     with get_connection() as conn:
         task = conn.execute(
@@ -4339,16 +4348,58 @@ def claim_manual_task(task_id: int, worker_id: int) -> str:
     if not is_subscribed(worker_id, channel):
         return "not_subscribed"
 
-    # ─── Reservation: slot-level; NULL/0 = no timer ─────────────────────────
+    # --- Reservation: slot-level; NULL/0 = no timer -------------------------
     task_reservation_minutes = task["reservation_minutes"]
     has_reservation = bool(task_reservation_minutes and task_reservation_minutes > 0)
+
     if has_reservation:
+        # --- RESERVATION-ONLY path ------------------------------------------
+        # Pre-check: repeat policy and completion status BEFORE reserving.
+        # This prevents a worker from reserving after they already completed.
+        with get_connection() as conn_pre:
+            task_row = conn_pre.execute(
+                "SELECT repeat_policy, repeat_hours FROM manual_tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            rp = task_row["repeat_policy"] if task_row else "one_time"
+            rh = task_row["repeat_hours"] if task_row else None
+            if rp == "repeatable" and rh:
+                last_done = conn_pre.execute(
+                    "SELECT done_at FROM task_completions "
+                    "WHERE user_id = ? AND task_key = ? ORDER BY done_at DESC LIMIT 1",
+                    (worker_id, task_key),
+                ).fetchone()
+                if last_done is not None:
+                    cooldown_check = conn_pre.execute(
+                        "SELECT datetime(?, '+' || ? || ' hours') > CURRENT_TIMESTAMP AS blocked",
+                        (last_done["done_at"], rh),
+                    ).fetchone()
+                    if cooldown_check and cooldown_check["blocked"]:
+                        return "repeat_cooldown"
+                    # Cooldown passed: clear old completion so the slot can be re-used.
+                    conn_pre.execute(
+                        "DELETE FROM task_completions WHERE user_id = ? AND task_key = ?",
+                        (worker_id, task_key),
+                    )
+                    conn_pre.commit()
+            elif rp == "one_time":
+                already = conn_pre.execute(
+                    "SELECT 1 FROM task_completions WHERE user_id = ? AND task_key = ?",
+                    (worker_id, task_key),
+                ).fetchone()
+                if already is not None:
+                    return "already_done"
+
         reservation = create_manual_task_reservation(
             task_id, worker_id, task_reservation_minutes,
         )
         if reservation is None:
             return "slot_held"
+        # Reservation created - return immediately.  Completion will happen
+        # later when the worker confirms via confirm_manual_task().
+        return "reserved"
 
+    # --- NO-RESERVATION path: immediate completion (backward compatible) ---
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         task = conn.execute(
@@ -4358,17 +4409,6 @@ def claim_manual_task(task_id: int, worker_id: int) -> str:
         ).fetchone()
         if task is None or task["status"] != "active" or task["quantity_remaining"] <= 0:
             return "unavailable"
-
-        # ── Validate reservation before completion ──────────────────────────
-        if has_reservation:
-            my_rsv = conn.execute(
-                "SELECT * FROM manual_task_reservations "
-                "WHERE task_id = ? AND worker_id = ? AND status = 'active' "
-                "AND expires_at > CURRENT_TIMESTAMP",
-                (task_id, worker_id),
-            ).fetchone()
-            if my_rsv is None:
-                return "reservation_expired"
 
         # Check repeat policy: one-time tasks block re-execution; repeatable
         # tasks allow re-execution after the cooldown from last completion.
@@ -4418,14 +4458,99 @@ def claim_manual_task(task_id: int, worker_id: int) -> str:
             "UPDATE users SET balance_usd_nano = balance_usd_nano + ? WHERE user_id = ?",
             (_task_reward_nano(task), worker_id),
         )
-        # Mark reservation as completed so it does not linger.
-        if has_reservation:
-            conn.execute(
-                "UPDATE manual_task_reservations SET status = 'completed' "
-                "WHERE task_id = ? AND worker_id = ? AND status = 'active'",
-                (task_id, worker_id),
-            )
         return "claimed"
+
+
+def confirm_manual_task(task_id: int, worker_id: int) -> str:
+    """Complete a previously-reserved manual task.
+
+    Validates that the worker holds an active, non-expired reservation,
+    then performs the full completion: task_completions INSERT, quantity
+    decrement, reward credit, reservation status='completed'.
+    """
+    task_key = f"manual_task:{task_id}"
+
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+
+        task = conn.execute(
+            "SELECT reward_points, reward_usd_nano, quantity_remaining, status "
+            "FROM manual_tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if task is None or task["status"] != "active" or task["quantity_remaining"] <= 0:
+            return "unavailable"
+
+        # --- Validate reservation ---
+        my_rsv = conn.execute(
+            "SELECT * FROM manual_task_reservations "
+            "WHERE task_id = ? AND worker_id = ? AND status = 'active' "
+            "AND expires_at > CURRENT_TIMESTAMP",
+            (task_id, worker_id),
+        ).fetchone()
+        if my_rsv is None:
+            return "reservation_expired"
+
+        # --- Repeat policy check ---
+        task_row = conn.execute(
+            "SELECT repeat_policy, repeat_hours FROM manual_tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        repeat_policy = task_row["repeat_policy"] if task_row else "one_time"
+        repeat_hours = task_row["repeat_hours"] if task_row else None
+        if repeat_policy == "repeatable" and repeat_hours:
+            last_done = conn.execute(
+                "SELECT done_at FROM task_completions "
+                "WHERE user_id = ? AND task_key = ? ORDER BY done_at DESC LIMIT 1",
+                (worker_id, task_key),
+            ).fetchone()
+            if last_done is not None:
+                cooldown_check = conn.execute(
+                    "SELECT datetime(?, '+' || ? || ' hours') > CURRENT_TIMESTAMP AS blocked",
+                    (last_done["done_at"], repeat_hours),
+                ).fetchone()
+                if cooldown_check and cooldown_check["blocked"]:
+                    return "repeat_cooldown"
+            conn.execute(
+                "DELETE FROM task_completions WHERE user_id = ? AND task_key = ?",
+                (worker_id, task_key),
+            )
+
+        # --- Insert completion ---
+        inserted = conn.execute(
+            "INSERT OR IGNORE INTO task_completions (user_id, task_key) VALUES (?, ?)",
+            (worker_id, task_key),
+        ).rowcount
+        if inserted != 1:
+            return "already_done"
+
+        # --- Decrement quantity ---
+        updated = conn.execute(
+            "UPDATE manual_tasks SET quantity_remaining = quantity_remaining - 1, "
+            "status = CASE WHEN quantity_remaining - 1 <= 0 "
+            "THEN 'completed' ELSE 'active' END "
+            "WHERE id = ? AND status = 'active' AND quantity_remaining > 0",
+            (task_id,),
+        ).rowcount
+        if updated != 1:
+            conn.rollback()
+            return "unavailable"
+
+        # --- Credit worker reward ---
+        conn.execute(
+            "UPDATE users SET balance_usd_nano = balance_usd_nano + ? WHERE user_id = ?",
+            (_task_reward_nano(task), worker_id),
+        )
+
+        # --- Mark reservation completed ---
+        conn.execute(
+            "UPDATE manual_task_reservations SET status = 'completed' "
+            "WHERE task_id = ? AND worker_id = ? AND status = 'active'",
+            (task_id, worker_id),
+        )
+        return "completed"
+
+
 
 
 def create_withdrawal_request(
@@ -10430,6 +10555,36 @@ def callback_claim_manual(call):
         return
 
     result = claim_manual_task(task_id, user_id)
+    if result == "reserved":
+        task = get_manual_task(task_id)
+        bot.answer_callback_query(call.id, "⏱️ تم حجز المهمة. أكّد التنفيذ خلال المهلة المحددة.", show_alert=True)
+        # Show confirm button
+        from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+        task_title = task["title"] if task else "المهمة"
+        confirm_text = (
+            f"⏱️ <b>تم حجز المهمة</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📋 <b>{html.escape(task_title)}</b>\n\n"
+            f"✅ اضغط <b>تأكيد التنفيذ</b> لإتمام المهمة واحصل على مكافأتك.\n"
+            f"⏳ المهلة محددة - تأكد خلال الوقت المحدد."
+        )
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ تأكيد التنفيذ", callback_data=f"confirm_manual_{task_id}"),
+        ]])
+        try:
+            bot.edit_message_text(
+                confirm_text,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=kb,
+            )
+        except Exception:
+            bot.send_message(
+                call.message.chat.id,
+                confirm_text,
+                reply_markup=kb,
+            )
+        return
     if result == "claimed":
         task = get_manual_task(task_id)
         was_active = is_account_active(user_id)
@@ -10478,6 +10633,7 @@ def callback_claim_manual(call):
         "invalid_target": "⚠️ هدف قناة Telegram غير صالح. راجع إعداد المهمة مع الإدارة.",
         "not_subscribed": "❌ لم يتم العثور على اشتراكك في القناة. اشترك أولاً ثم حاول مرة أخرى.",
         "slot_held": "🔒 هذه المهمة محجوزة حالياً بعامل آخر. يرجى الانتظار أو المحاولة لاحقاً.",
+        "reservation_expired": "⏰ وقت تنفيذ المهمة انتهى. المهلة كانت المدة المحددة للمهمة، وإنت اتأخرت في التأكيد. لذلك لم يتم احتساب المهمة.",
     }
     bot.answer_callback_query(
         call.id,
@@ -10485,6 +10641,93 @@ def callback_claim_manual(call):
         show_alert=True,
     )
     if result in ("unavailable", "already_done"):
+        try:
+            if account_access_allowed(user_id):
+                text, markup = build_tasks_text(user_id)
+            else:
+                text, markup = (
+                    build_activation_gate_text(user_id),
+                    activation_gate_keyboard(user_id),
+                )
+            bot.edit_message_text(
+                text,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=markup,
+            )
+        except Exception:
+            pass
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("confirm_manual_"))
+def callback_confirm_manual(call):
+    """Handle worker confirmation of a reserved manual task."""
+    if not require_active_account(call):
+        return
+    user_id = call.from_user.id
+    if get_user(user_id) is None:
+        bot.answer_callback_query(call.id, "يرجى إرسال /start أولاً.", show_alert=True)
+        return
+
+    try:
+        task_id = int(call.data[len("confirm_manual_"):])
+    except ValueError:
+        bot.answer_callback_query(call.id, "⚠️ المهمة غير صالحة.", show_alert=True)
+        return
+
+    result = confirm_manual_task(task_id, user_id)
+    if result == "completed":
+        task = get_manual_task(task_id)
+        was_active = is_account_active(user_id)
+        activated = not was_active and activate_user(user_id)
+        updated = get_user(user_id)
+        bot.answer_callback_query(
+            call.id,
+            f"🎉 تم التأكيد! حصلتَ على {_task_reward_display(task) if task else format_balance(0)}.",
+            show_alert=True,
+        )
+        if activated or (was_active and account_access_allowed(user_id)):
+            user = call.from_user
+            text = (
+                f"🌟 <b>مرحباً يا {html.escape(user.first_name or 'صديقي')}!</b>\n\n"
+                "✅ تم قبول المهمة وتحديث حسابك بنجاح.\n"
+                "اختر أحد الخيارات أدناه:"
+            )
+            markup = main_keyboard()
+        else:
+            text, markup = (
+                build_activation_gate_text(user_id),
+                activation_gate_keyboard(user_id),
+            )
+        try:
+            bot.edit_message_text(
+                text,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=markup,
+            )
+        except Exception:
+            pass
+        bot.send_message(
+            call.message.chat.id,
+            "✅ <b>تم تنفيذ المهمة!</b>\n\n"
+            f"تمت إضافة <b>{_task_reward_display(task) if task else format_balance(0)}</b> إلى رصيدك.\n"
+            f"🏆 <b>رصيدك الحالي:</b> {balance_text(updated)}",
+        )
+        return
+
+    messages = {
+        "reservation_expired": "⏰ وقت تنفيذ المهمة انتهى. المهلة كانت المدة المحددة للمهمة، وإنت اتأخرت في التأكيد. لذلك لم يتم احتساب المهمة.",
+        "already_done": "✅ لقد نفذت هذه المهمة واستلمت مكافأتها مسبقاً.",
+        "repeat_cooldown": "⏳ هذه المهمة قابلة للتكرار. يرجى الانتظار حتى تنتهي فترة التكرار.",
+        "unavailable": "⚠️ انتهت كمية هذه المهمة أو لم تعد متاحة.",
+    }
+    bot.answer_callback_query(
+        call.id,
+        messages.get(result, "⚠️ تعذر تأكيد المهمة."),
+        show_alert=True,
+    )
+    if result in ("unavailable", "already_done", "reservation_expired"):
         try:
             if account_access_allowed(user_id):
                 text, markup = build_tasks_text(user_id)

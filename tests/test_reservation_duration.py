@@ -1,6 +1,7 @@
 """
 Tests for per-task reservation duration (reservation_minutes) in manual tasks.
 Verifies that reservation_minutes is stored and used correctly.
+Updated: claim reserves only, confirm completes.
 """
 import os
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "1:TEST")
@@ -50,31 +51,34 @@ def _setup_db(mod):
     conn.execute("""
         CREATE TABLE manual_tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT,
+            title TEXT NOT NULL,
             task_link TEXT,
-            task_type TEXT,
+            task_type TEXT DEFAULT 'telegram_channel',
             target_reference TEXT,
             task_instructions TEXT,
-            reward_points INTEGER DEFAULT 0,
-            reward_usd_nano INTEGER,
-            quantity_requested INTEGER DEFAULT 1,
-            quantity_remaining INTEGER DEFAULT 1,
-            expires_at TEXT,
-            task_state TEXT DEFAULT 'AVAILABLE',
-            status TEXT DEFAULT 'active',
-            task_origin TEXT DEFAULT 'internal',
-            advertiser_id INTEGER,
-            total_cost_nano INTEGER,
+            reward_points INTEGER NOT NULL DEFAULT 0,
+            reward_usd_nano INTEGER NOT NULL DEFAULT 0,
+            quantity_requested INTEGER NOT NULL DEFAULT 1,
+            quantity_remaining INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             repeat_policy TEXT DEFAULT 'one_time',
-            repeat_hours INTEGER DEFAULT NULL,
-            reservation_minutes INTEGER DEFAULT NULL
+            repeat_hours INTEGER,
+            reservation_minutes INTEGER,
+            task_state TEXT DEFAULT 'AVAILABLE',
+            task_origin TEXT DEFAULT 'internal',
+            advertiser_id INTEGER
         )
     """)
     conn.execute("""
         CREATE TABLE task_completions (
             user_id INTEGER NOT NULL,
             task_key TEXT NOT NULL,
+            reward_points INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'granted',
             done_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            deducted_points INTEGER DEFAULT 0,
+            granted_at DATETIME,
             PRIMARY KEY (user_id, task_key)
         )
     """)
@@ -88,6 +92,10 @@ def _setup_db(mod):
             status TEXT NOT NULL DEFAULT 'active'
         )
     """)
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_task_reservation_active "
+        "ON manual_task_reservations(task_id, worker_id) WHERE status = 'active'"
+    )
     conn.commit()
 
     def _conn():
@@ -97,7 +105,6 @@ def _setup_db(mod):
 
     mod.get_connection = _conn
     mod.is_subscribed = lambda user_id, channel: True
-
     return conn, tmpdir
 
 
@@ -222,10 +229,11 @@ class TestReservationMinutesClaim(unittest.TestCase):
     def test_claim_with_5min_reservation(self):
         task_id = _create_task(self.conn, reservation_minutes=5)
         result = self.mod.claim_manual_task(task_id, 100)
-        self.assertEqual(result, "claimed")
-        # After claim, reservation is marked 'completed'
-        rsv = self._get_reservation(task_id, 'completed')
+        self.assertEqual(result, "reserved")
+        rsv = self._get_reservation(task_id, 'active')
         self.assertIsNotNone(rsv)
+        # Confirm it
+        self.assertEqual(self.mod.confirm_manual_task(task_id, 100), "completed")
 
     def test_claim_no_reservation_when_none(self):
         """Task with reservation_minutes=NULL → no reservation created."""
@@ -244,18 +252,17 @@ class TestReservationMinutesClaim(unittest.TestCase):
         self.assertIsNone(rsv)
 
     def test_different_worker_can_claim_slot_level(self):
-        """Slot-level: another worker CAN claim if slots available."""
+        """Slot-level: another worker CAN reserve if slots available."""
         task_id = _create_task(self.conn, reservation_minutes=15, quantity_remaining=5)
         self.mod.claim_manual_task(task_id, 100)
         result2 = self.mod.claim_manual_task(task_id, 200)
-        self.assertEqual(result2, "claimed")
+        self.assertEqual(result2, "reserved")
 
     def test_same_worker_can_claim_without_timer(self):
         """Without timer, different workers can all claim (up to quantity)."""
         task_id = _create_task(self.conn, reservation_minutes=None, quantity_remaining=3)
         r1 = self.mod.claim_manual_task(task_id, 100)
         self.assertEqual(r1, "claimed")
-        # Worker 200 should also be able to claim (no reservation blocking)
         r2 = self.mod.claim_manual_task(task_id, 200)
         self.assertEqual(r2, "claimed")
 
@@ -263,12 +270,12 @@ class TestReservationMinutesClaim(unittest.TestCase):
         """Same worker clicking again doesn't refresh timer."""
         task_id = _create_task(self.conn, reservation_minutes=15)
         self.mod.claim_manual_task(task_id, 100)
-        rsv1 = self._get_reservation(task_id, 'completed')
+        rsv1 = self._get_reservation(task_id, 'active')
         self.assertIsNotNone(rsv1)
         expires1 = rsv1["expires_at"]
-        # Worker tries again (will fail due to one_time, but reservation exists)
+        # Worker tries again → returns same reservation
         self.mod.claim_manual_task(task_id, 100)
-        rsv2 = self._get_reservation(task_id, 'completed')
+        rsv2 = self._get_reservation(task_id, 'active')
         self.assertEqual(rsv2["expires_at"], expires1)
 
 
@@ -289,28 +296,24 @@ class TestReservationSlotCounting(unittest.TestCase):
     def test_quantity_10_with_3_reservations_allows_7(self):
         """quantity=10, 3 active reservations → 7 slots still available."""
         task_id = _create_task(self.conn, quantity_remaining=10, reservation_minutes=15)
-        # Worker 100 claims (1 slot taken)
+        # Worker 100 reserves (1 slot taken)
         r1 = self.mod.claim_manual_task(task_id, 100)
-        self.assertEqual(r1, "claimed")
+        self.assertEqual(r1, "reserved")
 
         # Create 2 more tasks for workers 200/300 to have separate reservations
         task2 = _create_task(self.conn, quantity_remaining=10, reservation_minutes=15)
         task3 = _create_task(self.conn, quantity_remaining=10, reservation_minutes=15)
 
-        # All should succeed since each task is independent
         r2 = self.mod.claim_manual_task(task2, 200)
-        self.assertEqual(r2, "claimed")
+        self.assertEqual(r2, "reserved")
         r3 = self.mod.claim_manual_task(task3, 300)
-        self.assertEqual(r3, "claimed")
+        self.assertEqual(r3, "reserved")
 
     def test_last_slot_blocks_new_worker(self):
         """When only 1 slot left and it's reserved, new worker is blocked."""
-        # Create a task with quantity_remaining=1
         task_id = _create_task(self.conn, quantity_remaining=1, reservation_minutes=15)
-        # Worker 100 claims
         r1 = self.mod.claim_manual_task(task_id, 100)
-        self.assertEqual(r1, "claimed")
-        # Worker 200 should be blocked (no slots left)
+        self.assertEqual(r1, "reserved")
         r2 = self.mod.claim_manual_task(task_id, 200)
         self.assertIn(r2, ("unavailable", "slot_held"))
 
@@ -318,16 +321,14 @@ class TestReservationSlotCounting(unittest.TestCase):
         """After reservation expires, slot is available again."""
         task_id = _create_task(self.conn, quantity_remaining=2, reservation_minutes=5)
         self.mod.claim_manual_task(task_id, 100)
-        # Expire the reservation
         self.conn.execute(
             "UPDATE manual_task_reservations SET status = 'expired' "
             "WHERE task_id = ? AND worker_id = ?",
             (task_id, 100),
         )
         self.conn.commit()
-        # Worker 200 should now be able to claim (1 slot still available)
         result = self.mod.claim_manual_task(task_id, 200)
-        self.assertEqual(result, "claimed")
+        self.assertEqual(result, "reserved")
 
 
 class TestRepeatPolicyUnchanged(unittest.TestCase):
@@ -350,8 +351,8 @@ class TestRepeatPolicyUnchanged(unittest.TestCase):
             reservation_minutes=10, quantity_remaining=5,
         )
         r1 = self.mod.claim_manual_task(task_id, 100)
-        self.assertEqual(r1, "claimed")
-        # Second claim should be blocked by cooldown
+        self.assertEqual(r1, "reserved")
+        self.assertEqual(self.mod.confirm_manual_task(task_id, 100), "completed")
         r2 = self.mod.claim_manual_task(task_id, 100)
         self.assertEqual(r2, "repeat_cooldown")
 
@@ -363,7 +364,8 @@ class TestRepeatPolicyUnchanged(unittest.TestCase):
             reservation_minutes=10, quantity_remaining=5,
         )
         r1 = self.mod.claim_manual_task(task_id, 100)
-        self.assertEqual(r1, "claimed")
+        self.assertEqual(r1, "reserved")
+        self.assertEqual(self.mod.confirm_manual_task(task_id, 100), "completed")
         r2 = self.mod.claim_manual_task(task_id, 100)
         self.assertEqual(r2, "already_done")
 
