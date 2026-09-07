@@ -2112,6 +2112,23 @@ def init_db():
             "ON manual_task_reviews(user_id, task_id) "
             "WHERE status = 'pending'"
         )
+        # حجز مؤقت للمهام اليدوية: يمنع مؤدين آخرين من أخذ نفس المهمة.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS manual_task_reservations (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id     INTEGER NOT NULL REFERENCES manual_tasks(id),
+                worker_id   INTEGER NOT NULL REFERENCES users(user_id),
+                reserved_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                expires_at  DATETIME NOT NULL,
+                status      TEXT NOT NULL DEFAULT 'active'
+            )
+        """)
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "idx_manual_task_reservation_active "
+            "ON manual_task_reservations(task_id) "
+            "WHERE status = 'active'"
+        )
         conn.execute("""
             CREATE TABLE IF NOT EXISTS ad_reviews (
                 id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3762,6 +3779,78 @@ def create_advertiser_task(
         )
         conn.commit()
         return int(task.lastrowid)
+
+
+# ─── Manual task reservation helpers ────────────────────────────────────────
+_MANUAL_TASK_RESERVATION_MINUTES = 15
+
+
+def create_manual_task_reservation(task_id: int, worker_id: int) -> dict | None:
+    """Create a 15-minute reservation for a manual task slot.
+
+    Returns the reservation dict on success, or None if the slot is already
+    held by another worker.
+    """
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        # Lazy-expire any stale reservation for this task.
+        conn.execute(
+            "UPDATE manual_task_reservations SET status = 'expired' "
+            "WHERE task_id = ? AND status = 'active' AND expires_at < CURRENT_TIMESTAMP",
+            (task_id,),
+        )
+        # Check: is there another worker holding an active reservation?
+        existing = conn.execute(
+            "SELECT worker_id FROM manual_task_reservations "
+            "WHERE task_id = ? AND status = 'active' AND expires_at > CURRENT_TIMESTAMP",
+            (task_id,),
+        ).fetchone()
+        if existing is not None and existing["worker_id"] != worker_id:
+            conn.rollback()
+            return None
+        # Upsert: if the same worker already has one, refresh it.
+        conn.execute(
+            "DELETE FROM manual_task_reservations "
+            "WHERE task_id = ? AND status = 'active'",
+            (task_id,),
+        )
+        row = conn.execute(
+            "INSERT INTO manual_task_reservations "
+            "(task_id, worker_id, expires_at) "
+            "VALUES (?, ?, datetime(CURRENT_TIMESTAMP, '+' || ? || ' minutes'))",
+            (task_id, worker_id, _MANUAL_TASK_RESERVATION_MINUTES),
+        )
+        conn.commit()
+        reservation = conn.execute(
+            "SELECT * FROM manual_task_reservations WHERE id = ?",
+            (row.lastrowid,),
+        ).fetchone()
+        return dict(reservation) if reservation else None
+
+
+def get_active_manual_task_reservation(task_id: int) -> dict | None:
+    """Return the active, non-expired reservation for a task, or None."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM manual_task_reservations "
+            "WHERE task_id = ? AND status = 'active' AND expires_at > CURRENT_TIMESTAMP",
+            (task_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def expire_manual_task_reservation(task_id: int, worker_id: int) -> bool:
+    """Mark a reservation as expired if it belongs to the worker and is past deadline."""
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        updated = conn.execute(
+            "UPDATE manual_task_reservations SET status = 'expired' "
+            "WHERE task_id = ? AND worker_id = ? AND status = 'active' "
+            "AND expires_at <= CURRENT_TIMESTAMP",
+            (task_id, worker_id),
+        ).rowcount
+        conn.commit()
+        return updated > 0
 
 
 def get_active_manual_tasks(limit: int = 10):
