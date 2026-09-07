@@ -5918,6 +5918,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
         "💸 طلبات السحب V2 المعلقة",
         callback_data="admin_list_v2_withdrawals",
     ))
+    markup.add(InlineKeyboardButton("📥 الرسائل", callback_data="admin_messages"))
     markup.add(InlineKeyboardButton("🔙 إغلاق اللوحة", callback_data="admin_close"))
     return markup
 
@@ -9571,6 +9572,12 @@ def callback_admin_broadcast(call):
         ]]),
     )
     bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_messages"
+                             and is_admin(call.from_user.id))
+def callback_admin_messages(call):
+    bot.answer_callback_query(call.id, "📥 قيد التطوير")
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "admin_close"
