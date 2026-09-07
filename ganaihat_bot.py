@@ -3719,6 +3719,8 @@ def create_advertiser_task(
     task_type: str = "telegram_channel",
     target_reference: str | None = None,
     task_instructions: str = "",
+    repeat_policy: str = "one_time",
+    repeat_hours: int | None = None,
 ) -> int | None:
     """Create an advertiser-funded internal task with atomic wallet debit.
 
@@ -3783,12 +3785,13 @@ def create_advertiser_task(
             "(title, task_link, task_type, target_reference, task_instructions, "
             "reward_points, quantity_requested, quantity_remaining, "
             "expires_at, task_state, task_origin, advertiser_id, total_cost_nano, "
-            "reward_usd_nano) "
-            "VALUES (?, ?, ?, ?, ?, 0, ?, ?, NULL, 'AVAILABLE', 'internal', ?, ?, ?)",
+            "reward_usd_nano, repeat_policy, repeat_hours) "
+            "VALUES (?, ?, ?, ?, ?, 0, ?, ?, NULL, 'AVAILABLE', 'internal', ?, ?, ?, ?, ?)",
             (
                 title, task_link, task_type, target_reference, task_instructions,
                 quantity, quantity,
                 advertiser_id, total_cost_nano, reward_nano,
+                repeat_policy, repeat_hours,
             ),
         )
         conn.commit()
@@ -10904,7 +10907,114 @@ def handle_ad_task_reward(message):
     state["total_cost_nano"] = total_cost_nano
     state["worker_pool_nano"] = worker_pool_nano
     state["balance_after"] = balance_after
+    state["step"] = "awaiting_ad_task_repeat"
+
+    repeat_text = (
+        "🔄 <b>سياسة التكرار</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "هل تريد السماح للمؤديين بتنفيذ هذه المهمة مرة أخرى؟\n\n"
+        f"📢 <b>القناة:</b> {html.escape(channel)}\n"
+        f"🔢 <b>العدد:</b> {quantity} منفذ\n"
+        f"🎁 <b>مكافأة كل منفذ:</b> {format_balance(reward_nano)}\n"
+        f"💳 <b>التكلفة الإجمالية:</b> {format_balance(total_cost_nano)}\n\n"
+        "اختر سياسة التكرار:"
+    )
+    bot.send_message(
+        message.chat.id,
+        repeat_text,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("1️⃣ مرة واحدة فقط", callback_data="ad_repeat_one_time")],
+            [InlineKeyboardButton("⏰ كل 24 ساعة", callback_data="ad_repeat_24")],
+            [InlineKeyboardButton("⏰ كل 48 ساعة", callback_data="ad_repeat_48")],
+            [InlineKeyboardButton("✏️ فترة مخصصة", callback_data="ad_repeat_custom")],
+            [InlineKeyboardButton("❌ إلغاء", callback_data="back_main")],
+        ]),
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data in (
+    "ad_repeat_one_time", "ad_repeat_24", "ad_repeat_48", "ad_repeat_custom",
+))
+def callback_ad_task_repeat(call):
+    """Repeat-policy choice for advertiser task creation."""
+    user_id = call.from_user.id
+    state = user_state.get(user_id, {})
+
+    if state.get("step") != "awaiting_ad_task_repeat":
+        bot.answer_callback_query(call.id, "⚠️ انتهت صلاحية الطلب.", show_alert=True)
+        return
+
+    if call.data == "ad_repeat_one_time":
+        state["repeat_policy"] = "one_time"
+        state["repeat_hours"] = None
+        state["step"] = "awaiting_ad_task_confirm"
+        _show_ad_task_confirm(user_id, call)
+        return
+
+    if call.data in ("ad_repeat_24", "ad_repeat_48"):
+        hours = 24 if call.data == "ad_repeat_24" else 48
+        state["repeat_policy"] = "repeatable"
+        state["repeat_hours"] = hours
+        state["step"] = "awaiting_ad_task_confirm"
+        _show_ad_task_confirm(user_id, call)
+        return
+
+    # custom hours → ask for input
+    state["step"] = "awaiting_ad_task_repeat_custom"
+    bot.edit_message_text(
+        "✏️ <b>فترة مخصصة</b>\n\n"
+        "أرسل عدد الساعات بعد الإكمال قبل السماح بإعادة التنفيذ\n"
+        "(مثلاً: 6 أو 10 أو 12):",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ إلغاء", callback_data="back_main"),
+        ]]),
+    )
+    bot.answer_callback_query(call.id)
+
+
+@bot.message_handler(
+    func=lambda m: m.from_user.id in user_state
+    and user_state[m.from_user.id].get("step") == "awaiting_ad_task_repeat_custom"
+)
+def handle_ad_task_repeat_custom(message):
+    """Receive custom repeat hours for advertiser task."""
+    user_id = message.from_user.id
+    try:
+        hours = int((message.text or "").strip())
+        if hours <= 0:
+            raise ValueError
+    except (ValueError, TypeError):
+        bot.send_message(
+            message.chat.id,
+            "⚠️ غير صحيح. أرسل رقماً موجباً بالساعات، أو /start للإلغاء.",
+        )
+        return
+
+    state = user_state.get(user_id, {})
+    state["repeat_policy"] = "repeatable"
+    state["repeat_hours"] = hours
     state["step"] = "awaiting_ad_task_confirm"
+    _show_ad_task_confirm(user_id)
+
+
+def _show_ad_task_confirm(user_id, call=None):
+    """Show the final confirmation summary for advertiser task creation."""
+    state = user_state.get(user_id, {})
+    quantity = state["quantity"]
+    channel = state["channel"]
+    reward_nano = state["reward_nano"]
+    total_cost_nano = state["total_cost_nano"]
+    worker_pool_nano = state["worker_pool_nano"]
+    balance_after = state["balance_after"]
+    repeat_policy = state.get("repeat_policy", "one_time")
+    repeat_hours = state.get("repeat_hours")
+
+    if repeat_policy == "repeatable" and repeat_hours:
+        repeat_label = f"كل {repeat_hours} ساعة"
+    else:
+        repeat_label = "مرة واحدة فقط"
 
     confirm_text = (
         "📋 <b>ملخص المهمة الإعلانية</b>\n"
@@ -10917,18 +11027,27 @@ def handle_ad_task_reward(message):
         f"📈 <b>هامش المنصة (30%):</b> {format_balance(total_cost_nano - worker_pool_nano)}\n"
         f"💳 <b>التكلفة الإجمالية:</b> {format_balance(total_cost_nano)}\n"
         f"💼 <b>رصيدك بعد الإنشاء:</b> {format_balance(balance_after)}\n\n"
-        "⏰ المهمة داخلية ولا تنتهي تلقائياً.\n\n"
+        f"🔁 <b>التكرار:</b> {repeat_label}\n\n"
         "⚠️ <b>تأكد من صحة البيانات قبل التأكيد.</b>"
     )
-    bot.send_message(
-        message.chat.id,
-        confirm_text,
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ تأكيد الإنشاء", callback_data="ad_task_confirm")],
-            [InlineKeyboardButton("❌ إلغاء", callback_data="back_main")],
-        ]),
-    )
 
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ تأكيد الإنشاء", callback_data="ad_task_confirm")],
+        [InlineKeyboardButton("❌ إلغاء", callback_data="back_main")],
+    ])
+
+    if call is not None:
+        try:
+            bot.edit_message_text(
+                confirm_text,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=kb,
+            )
+        except Exception:
+            bot.send_message(user_id, confirm_text, reply_markup=kb)
+    else:
+        bot.send_message(user_id, confirm_text, reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda call: call.data == "ad_task_confirm")
 def callback_ad_task_confirm(call):
@@ -10946,6 +11065,8 @@ def callback_ad_task_confirm(call):
     channel = state["channel"]
     quantity = state["quantity"]
     reward_nano = state["reward_nano"]
+    repeat_policy = state.get("repeat_policy", "one_time")
+    repeat_hours = state.get("repeat_hours")
 
     try:
         task_id = create_advertiser_task(
@@ -10957,6 +11078,8 @@ def callback_ad_task_confirm(call):
             task_type="telegram_channel",
             target_reference=channel,
             task_instructions=f"اشترك في القناة {channel} وأكمل.",
+            repeat_policy=repeat_policy,
+            repeat_hours=repeat_hours,
         )
     except Exception:
         task_id = None
