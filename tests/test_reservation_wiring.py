@@ -66,7 +66,8 @@ def _setup_db(mod):
             advertiser_id INTEGER,
             total_cost_nano INTEGER,
             repeat_policy TEXT DEFAULT 'one_time',
-            repeat_hours INTEGER DEFAULT NULL
+            repeat_hours INTEGER DEFAULT NULL,
+            reservation_minutes INTEGER DEFAULT NULL
         )
     """)
     conn.execute("""
@@ -113,6 +114,7 @@ def _create_task(conn, **overrides):
         quantity_remaining=5,
         status="active",
         repeat_policy="one_time",
+        reservation_minutes=15,
     )
     defaults.update(overrides)
     cols = ", ".join(defaults.keys())

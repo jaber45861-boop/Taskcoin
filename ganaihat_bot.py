@@ -2098,6 +2098,10 @@ def init_db():
             conn.execute(
                 "ALTER TABLE manual_tasks ADD COLUMN repeat_hours INTEGER"
             )
+        if "reservation_minutes" not in manual_task_columns:
+            conn.execute(
+                "ALTER TABLE manual_tasks ADD COLUMN reservation_minutes INTEGER DEFAULT NULL"
+            )
         conn.execute(
             "UPDATE manual_tasks SET target_reference = task_link "
             "WHERE target_reference IS NULL OR TRIM(target_reference) = ''"
@@ -3686,6 +3690,7 @@ def create_manual_task(
     task_origin: str = "internal",
     repeat_policy: str = "one_time",
     repeat_hours: int | None = None,
+    reservation_minutes: int | None = None,
 ) -> int:
     """Create a manual task."""
     if task_type not in {"social_manual", "telegram_channel"}:
@@ -3700,11 +3705,11 @@ def create_manual_task(
             "INSERT INTO manual_tasks "
             "(title, task_link, task_type, target_reference, task_instructions, "
             "reward_points, quantity_requested, quantity_remaining, "
-            "task_state, task_origin, repeat_policy, repeat_hours) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'AVAILABLE', ?, ?, ?)",
+            "task_state, task_origin, repeat_policy, repeat_hours, reservation_minutes) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'AVAILABLE', ?, ?, ?, ?)",
             (title, task_link, task_type, target_reference, task_instructions,
              reward_points, quantity, quantity, task_origin,
-             repeat_policy, repeat_hours),
+             repeat_policy, repeat_hours, reservation_minutes),
         )
         return int(task.lastrowid)
 
@@ -3721,6 +3726,7 @@ def create_advertiser_task(
     task_instructions: str = "",
     repeat_policy: str = "one_time",
     repeat_hours: int | None = None,
+    reservation_minutes: int | None = None,
 ) -> int | None:
     """Create an advertiser-funded internal task with atomic wallet debit.
 
@@ -3785,13 +3791,13 @@ def create_advertiser_task(
             "(title, task_link, task_type, target_reference, task_instructions, "
             "reward_points, quantity_requested, quantity_remaining, "
             "expires_at, task_state, task_origin, advertiser_id, total_cost_nano, "
-            "reward_usd_nano, repeat_policy, repeat_hours) "
-            "VALUES (?, ?, ?, ?, ?, 0, ?, ?, NULL, 'AVAILABLE', 'internal', ?, ?, ?, ?, ?)",
+            "reward_usd_nano, repeat_policy, repeat_hours, reservation_minutes) "
+            "VALUES (?, ?, ?, ?, ?, 0, ?, ?, NULL, 'AVAILABLE', 'internal', ?, ?, ?, ?, ?, ?)",
             (
                 title, task_link, task_type, target_reference, task_instructions,
                 quantity, quantity,
                 advertiser_id, total_cost_nano, reward_nano,
-                repeat_policy, repeat_hours,
+                repeat_policy, repeat_hours, reservation_minutes,
             ),
         )
         conn.commit()
@@ -3802,8 +3808,9 @@ def create_advertiser_task(
 _MANUAL_TASK_RESERVATION_MINUTES = 15
 
 
-def create_manual_task_reservation(task_id: int, worker_id: int) -> dict | None:
-    """Create or return existing 15-minute reservation for a manual task slot.
+def create_manual_task_reservation(task_id: int, worker_id: int,
+                                  reservation_minutes: int = 15) -> dict | None:
+    """Create or return existing reservation for a manual task slot.
 
     If the same worker already holds an active (non-expired) reservation,
     returns that existing reservation without changing its expires_at.
@@ -3844,7 +3851,7 @@ def create_manual_task_reservation(task_id: int, worker_id: int) -> dict | None:
             "INSERT INTO manual_task_reservations "
             "(task_id, worker_id, expires_at) "
             "VALUES (?, ?, datetime(CURRENT_TIMESTAMP, '+' || ? || ' minutes'))",
-            (task_id, worker_id, _MANUAL_TASK_RESERVATION_MINUTES),
+            (task_id, worker_id, reservation_minutes),
         )
         conn.commit()
         reservation = conn.execute(
@@ -4308,7 +4315,7 @@ def claim_manual_task(task_id: int, worker_id: int) -> str:
     with get_connection() as conn:
         task = conn.execute(
             "SELECT reward_points, reward_usd_nano, quantity_remaining, status, task_type, "
-            "target_reference, task_link "
+            "target_reference, task_link, reservation_minutes "
             "FROM manual_tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
@@ -4322,16 +4329,29 @@ def claim_manual_task(task_id: int, worker_id: int) -> str:
     if not is_subscribed(worker_id, channel):
         return "not_subscribed"
 
-    # ─── Reservation: try to get existing or create new 15-min reservation ──
-    existing_reservation = get_active_manual_task_reservation(task_id)
-    if existing_reservation is not None:
-        if existing_reservation["worker_id"] != worker_id:
-            return "slot_held"
-        # Same worker already has active reservation — reuse it.
-    else:
-        reservation = create_manual_task_reservation(task_id, worker_id)
-        if reservation is None:
-            return "slot_held"
+    # ─── Reservation: per-task duration; NULL/0 = no timer ──────────────────
+    task_reservation_minutes = task["reservation_minutes"]
+    if task_reservation_minutes and task_reservation_minutes > 0:
+        existing_reservation = get_active_manual_task_reservation(task_id)
+        if existing_reservation is not None:
+            if existing_reservation["worker_id"] != worker_id:
+                return "slot_held"
+            # Same worker already has active reservation — reuse it.
+        else:
+            # Count active reservations to check slot availability.
+            with get_connection() as _conn:
+                active_rsv_count = _conn.execute(
+                    "SELECT COUNT(*) as cnt FROM manual_task_reservations "
+                    "WHERE task_id = ? AND status = 'active' AND expires_at > CURRENT_TIMESTAMP",
+                    (task_id,),
+                ).fetchone()["cnt"]
+            if active_rsv_count >= task["quantity_remaining"]:
+                return "slot_held"
+            reservation = create_manual_task_reservation(
+                task_id, worker_id, task_reservation_minutes,
+            )
+            if reservation is None:
+                return "slot_held"
 
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -7652,7 +7672,7 @@ def callback_repeat_policy_choice(call):
     if call.data == "repeat_one_time":
         state["repeat_policy"] = "one_time"
         state["repeat_hours"] = None
-        _finalize_admin_task(admin_id, call)
+        _show_reservation_duration_choice(admin_id, call)
         return
 
     # repeatable → ask for hours
@@ -7701,7 +7721,7 @@ def callback_repeat_hours_choice(call):
     hours = int(call.data.split("_")[-1])
     state["repeat_policy"] = "repeatable"
     state["repeat_hours"] = hours
-    _finalize_admin_task(admin_id, call)
+    _show_reservation_duration_choice(admin_id, call)
 
 
 @bot.message_handler(
@@ -7724,6 +7744,94 @@ def handle_manual_task_repeat_custom_hours(message):
     state = user_state.get(admin_id, {})
     state["repeat_policy"] = "repeatable"
     state["repeat_hours"] = hours
+    _show_reservation_duration_choice(admin_id)
+
+
+def _show_reservation_duration_choice(admin_id: int, call=None):
+    """Show reservation duration options for admin task creation."""
+    state = user_state.get(admin_id, {})
+    state["step"] = "awaiting_manual_task_reservation_duration"
+
+    text = (
+        "⏱️ <b>مدة الحجز (Reservation Timer)</b>\n\n"
+        "اختر مدة حجز المهمة للمؤدي بعد بدء التنفيذ:\n"
+        "(إذا اخترت بدون Timer، يمكن لعدة عمال تنفيذ المهمة في نفس الوقت)"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ بدون Timer", callback_data="rsv_dur_0")],
+        [InlineKeyboardButton("⏱️ 5 دقائق", callback_data="rsv_dur_5")],
+        [InlineKeyboardButton("⏱️ 10 دقائق", callback_data="rsv_dur_10")],
+        [InlineKeyboardButton("⏱️ 15 دقيقة", callback_data="rsv_dur_15")],
+        [InlineKeyboardButton("⏱️ 30 دقيقة", callback_data="rsv_dur_30")],
+        [InlineKeyboardButton("⏱️ ساعة", callback_data="rsv_dur_60")],
+        [InlineKeyboardButton("⏱️ يوم", callback_data="rsv_dur_1440")],
+        [InlineKeyboardButton("⏱️ يومين", callback_data="rsv_dur_2880")],
+        [InlineKeyboardButton("✏️ فترة مخصصة", callback_data="rsv_dur_custom")],
+        [InlineKeyboardButton("❌ إلغاء", callback_data="admin_panel")],
+    ])
+
+    if call is not None:
+        try:
+            bot.edit_message_text(
+                text, chat_id=call.message.chat.id,
+                message_id=call.message.message_id, reply_markup=kb,
+            )
+        except Exception:
+            bot.send_message(admin_id, text, reply_markup=kb)
+    else:
+        bot.send_message(admin_id, text, reply_markup=kb)
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith("rsv_dur_")
+    and is_admin(call.from_user.id)
+)
+def callback_reservation_duration_choice(call):
+    admin_id = call.from_user.id
+    state = user_state.get(admin_id, {})
+    if state.get("step") != "awaiting_manual_task_reservation_duration":
+        bot.answer_callback_query(call.id, "⚠️ انتهت الجلسة.", show_alert=True)
+        return
+
+    if call.data == "rsv_dur_custom":
+        state["step"] = "awaiting_manual_task_reservation_custom"
+        bot.edit_message_text(
+            "✏️ <b>فترة مخصصة</b>\n\n"
+            "أرسل عدد الدقائق بعد الإكمال قبل السماح بتنفيذ آخر\n"
+            "(مثلاً: 7 أو 20 أو 45):",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("❌ إلغاء", callback_data="admin_panel"),
+            ]]),
+        )
+        bot.answer_callback_query(call.id)
+        return
+
+    minutes = int(call.data.split("_")[-1])
+    state["reservation_minutes"] = minutes if minutes > 0 else None
+    _finalize_admin_task(admin_id, call)
+
+
+@bot.message_handler(
+    func=lambda m: is_admin(m.from_user.id)
+    and user_state.get(m.from_user.id, {}).get("step")
+    == "awaiting_manual_task_reservation_custom"
+)
+def handle_manual_task_reservation_custom(message):
+    admin_id = message.from_user.id
+    try:
+        minutes = int((message.text or "").strip())
+        if minutes <= 0:
+            raise ValueError
+    except (ValueError, TypeError):
+        bot.send_message(
+            admin_id,
+            "⚠️ غير صحيح. أرسل رقماً موجباً بالدقائق، أو /admin للإلغاء.",
+        )
+        return
+    state = user_state.get(admin_id, {})
+    state["reservation_minutes"] = minutes
     _finalize_admin_task(admin_id)
 
 
@@ -7739,12 +7847,17 @@ def _finalize_admin_task(admin_id: int, call=None):
         task_instructions=state.get("task_instructions", ""),
         repeat_policy=state.get("repeat_policy", "one_time"),
         repeat_hours=state.get("repeat_hours"),
+        reservation_minutes=state.get("reservation_minutes"),
     )
     user_state.pop(admin_id, None)
     repeat_label = (
         "مرة واحدة فقط"
         if state.get("repeat_policy") == "one_time"
         else f"قابلة للتكرار كل {state.get('repeat_hours', '?')} ساعة"
+    )
+    rsv_min = state.get("reservation_minutes")
+    rsv_label = (
+        f"{rsv_min} دقيقة" if rsv_min and rsv_min > 0 else "بدون Timer"
     )
     msg = (
         "✅ <b>تمت إضافة المهمة بنجاح</b>\n"
@@ -7756,7 +7869,8 @@ def _finalize_admin_task(admin_id: int, call=None):
         f"📋 الشروط: {html.escape(state.get('task_instructions', ''))}\n"
         f"🎁 المكافأة: <b>{format_balance(state['reward_points'])}</b>\n"
         f"📊 الكمية: <b>{state['quantity']}</b> تنفيذ\n"
-        f"🔁 التكرار: <b>{repeat_label}</b>\n\n"
+        f"🔁 التكرار: <b>{repeat_label}</b>\n"
+        f"⏱️ الحجز: <b>{rsv_label}</b>\n\n"
         "ستظهر المهمة الآن في «المهام اليومية».",
     )
     if call is not None:
@@ -10968,16 +11082,14 @@ def callback_ad_task_repeat(call):
     if call.data == "ad_repeat_one_time":
         state["repeat_policy"] = "one_time"
         state["repeat_hours"] = None
-        state["step"] = "awaiting_ad_task_confirm"
-        _show_ad_task_confirm(user_id, call)
+        _show_ad_reservation_duration(user_id, call)
         return
 
     if call.data in ("ad_repeat_24", "ad_repeat_48"):
         hours = 24 if call.data == "ad_repeat_24" else 48
         state["repeat_policy"] = "repeatable"
         state["repeat_hours"] = hours
-        state["step"] = "awaiting_ad_task_confirm"
-        _show_ad_task_confirm(user_id, call)
+        _show_ad_reservation_duration(user_id, call)
         return
 
     # custom hours → ask for input
@@ -11016,6 +11128,95 @@ def handle_ad_task_repeat_custom(message):
     state = user_state.get(user_id, {})
     state["repeat_policy"] = "repeatable"
     state["repeat_hours"] = hours
+    _show_ad_reservation_duration(user_id)
+
+
+def _show_ad_reservation_duration(user_id, call=None):
+    """Show reservation duration options for advertiser task creation."""
+    state = user_state.get(user_id, {})
+    state["step"] = "awaiting_ad_task_reservation_duration"
+
+    text = (
+        "⏱️ <b>مدة الحجز (Reservation Timer)</b>\n\n"
+        "اختر مدة حجز المهمة للمؤدي بعد بدء التنفيذ:\n"
+        "(إذا اخترت بدون Timer، يمكن لعدة عمال تنفيذ المهمة في نفس الوقت)"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ بدون Timer", callback_data="ad_rsv_0")],
+        [InlineKeyboardButton("⏱️ 5 دقائق", callback_data="ad_rsv_5")],
+        [InlineKeyboardButton("⏱️ 10 دقائق", callback_data="ad_rsv_10")],
+        [InlineKeyboardButton("⏱️ 15 دقيقة", callback_data="ad_rsv_15")],
+        [InlineKeyboardButton("⏱️ 30 دقيقة", callback_data="ad_rsv_30")],
+        [InlineKeyboardButton("⏱️ ساعة", callback_data="ad_rsv_60")],
+        [InlineKeyboardButton("⏱️ يوم", callback_data="ad_rsv_1440")],
+        [InlineKeyboardButton("⏱️ يومين", callback_data="ad_rsv_2880")],
+        [InlineKeyboardButton("✏️ فترة مخصصة", callback_data="ad_rsv_custom")],
+        [InlineKeyboardButton("❌ إلغاء", callback_data="back_main")],
+    ])
+
+    if call is not None:
+        try:
+            bot.edit_message_text(
+                text, chat_id=call.message.chat.id,
+                message_id=call.message.message_id, reply_markup=kb,
+            )
+        except Exception:
+            bot.send_message(user_id, text, reply_markup=kb)
+    else:
+        bot.send_message(user_id, text, reply_markup=kb)
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith("ad_rsv_")
+    and not is_admin(call.from_user.id)
+)
+def callback_ad_reservation_duration(call):
+    user_id = call.from_user.id
+    state = user_state.get(user_id, {})
+    if state.get("step") != "awaiting_ad_task_reservation_duration":
+        bot.answer_callback_query(call.id, "⚠️ انتهت صلاحية الطلب.", show_alert=True)
+        return
+
+    if call.data == "ad_rsv_custom":
+        state["step"] = "awaiting_ad_task_reservation_custom"
+        bot.edit_message_text(
+            "✏️ <b>فترة مخصصة</b>\n\n"
+            "أرسل عدد الدقائق بعد الإكمال قبل السماح بتنفيذ آخر\n"
+            "(مثلاً: 7 أو 20 أو 45):",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("❌ إلغاء", callback_data="back_main"),
+            ]]),
+        )
+        bot.answer_callback_query(call.id)
+        return
+
+    minutes = int(call.data.split("_")[-1])
+    state["reservation_minutes"] = minutes if minutes > 0 else None
+    state["step"] = "awaiting_ad_task_confirm"
+    _show_ad_task_confirm(user_id, call)
+
+
+@bot.message_handler(
+    func=lambda m: m.from_user.id in user_state
+    and user_state[m.from_user.id].get("step") == "awaiting_ad_task_reservation_custom"
+)
+def handle_ad_task_reservation_custom(message):
+    """Receive custom reservation minutes for advertiser task."""
+    user_id = message.from_user.id
+    try:
+        minutes = int((message.text or "").strip())
+        if minutes <= 0:
+            raise ValueError
+    except (ValueError, TypeError):
+        bot.send_message(
+            message.chat.id,
+            "⚠️ غير صحيح. أرسل رقماً موجباً بالدقائق، أو /start للإلغاء.",
+        )
+        return
+    state = user_state.get(user_id, {})
+    state["reservation_minutes"] = minutes
     state["step"] = "awaiting_ad_task_confirm"
     _show_ad_task_confirm(user_id)
 
@@ -11031,11 +11232,13 @@ def _show_ad_task_confirm(user_id, call=None):
     balance_after = state["balance_after"]
     repeat_policy = state.get("repeat_policy", "one_time")
     repeat_hours = state.get("repeat_hours")
+    rsv_min = state.get("reservation_minutes")
 
     if repeat_policy == "repeatable" and repeat_hours:
         repeat_label = f"كل {repeat_hours} ساعة"
     else:
         repeat_label = "مرة واحدة فقط"
+    rsv_label = f"{rsv_min} دقيقة" if rsv_min and rsv_min > 0 else "بدون Timer"
 
     confirm_text = (
         "📋 <b>ملخص المهمة الإعلانية</b>\n"
@@ -11048,7 +11251,8 @@ def _show_ad_task_confirm(user_id, call=None):
         f"📈 <b>هامش المنصة (30%):</b> {format_balance(total_cost_nano - worker_pool_nano)}\n"
         f"💳 <b>التكلفة الإجمالية:</b> {format_balance(total_cost_nano)}\n"
         f"💼 <b>رصيدك بعد الإنشاء:</b> {format_balance(balance_after)}\n\n"
-        f"🔁 <b>التكرار:</b> {repeat_label}\n\n"
+        f"🔁 <b>التكرار:</b> {repeat_label}\n"
+        f"⏱️ <b>الحجز:</b> {rsv_label}\n\n"
         "⚠️ <b>تأكد من صحة البيانات قبل التأكيد.</b>"
     )
 
@@ -11088,6 +11292,7 @@ def callback_ad_task_confirm(call):
     reward_nano = state["reward_nano"]
     repeat_policy = state.get("repeat_policy", "one_time")
     repeat_hours = state.get("repeat_hours")
+    reservation_minutes = state.get("reservation_minutes")
 
     try:
         task_id = create_advertiser_task(
@@ -11101,6 +11306,7 @@ def callback_ad_task_confirm(call):
             task_instructions=f"اشترك في القناة {channel} وأكمل.",
             repeat_policy=repeat_policy,
             repeat_hours=repeat_hours,
+            reservation_minutes=reservation_minutes,
         )
     except Exception:
         task_id = None

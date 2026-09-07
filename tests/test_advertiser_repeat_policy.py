@@ -73,7 +73,8 @@ def _setup_db(mod):
             advertiser_id INTEGER,
             total_cost_nano INTEGER,
             repeat_policy TEXT DEFAULT 'one_time',
-            repeat_hours INTEGER DEFAULT NULL
+            repeat_hours INTEGER DEFAULT NULL,
+            reservation_minutes INTEGER DEFAULT NULL
         )
     """)
     conn.commit()
