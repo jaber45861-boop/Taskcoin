@@ -161,7 +161,9 @@ class TestReservationExclusivity(unittest.TestCase):
             self.assertIsNotNone(r1)
             r2 = bot.create_manual_task_reservation(task_id, 400)
             self.assertIsNotNone(r2)
-            self.assertNotEqual(r1["id"], r2["id"])
+            # Same worker gets the existing reservation back (no refresh)
+            self.assertEqual(r1["id"], r2["id"])
+            self.assertEqual(r1["expires_at"], r2["expires_at"])
         finally:
             conn.close()
             os.unlink(path)

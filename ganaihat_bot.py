@@ -3803,7 +3803,10 @@ _MANUAL_TASK_RESERVATION_MINUTES = 15
 
 
 def create_manual_task_reservation(task_id: int, worker_id: int) -> dict | None:
-    """Create a 15-minute reservation for a manual task slot.
+    """Create or return existing 15-minute reservation for a manual task slot.
+
+    If the same worker already holds an active (non-expired) reservation,
+    returns that existing reservation without changing its expires_at.
 
     Returns the reservation dict on success, or None if the slot is already
     held by another worker.
@@ -3816,21 +3819,27 @@ def create_manual_task_reservation(task_id: int, worker_id: int) -> dict | None:
             "WHERE task_id = ? AND status = 'active' AND expires_at < CURRENT_TIMESTAMP",
             (task_id,),
         )
-        # Check: is there another worker holding an active reservation?
+        # Check: is there an active reservation for this task?
         existing = conn.execute(
-            "SELECT worker_id FROM manual_task_reservations "
+            "SELECT worker_id, expires_at FROM manual_task_reservations "
             "WHERE task_id = ? AND status = 'active' AND expires_at > CURRENT_TIMESTAMP",
             (task_id,),
         ).fetchone()
-        if existing is not None and existing["worker_id"] != worker_id:
-            conn.rollback()
-            return None
-        # Upsert: if the same worker already has one, refresh it.
-        conn.execute(
-            "DELETE FROM manual_task_reservations "
-            "WHERE task_id = ? AND status = 'active'",
-            (task_id,),
-        )
+        if existing is not None:
+            if existing["worker_id"] == worker_id:
+                # Same worker — return existing reservation, do NOT refresh.
+                conn.commit()
+                row = conn.execute(
+                    "SELECT * FROM manual_task_reservations "
+                    "WHERE task_id = ? AND status = 'active' AND worker_id = ?",
+                    (task_id, worker_id),
+                ).fetchone()
+                return dict(row) if row else None
+            else:
+                # Different worker holds the slot.
+                conn.rollback()
+                return None
+        # No active reservation — create a new one.
         row = conn.execute(
             "INSERT INTO manual_task_reservations "
             "(task_id, worker_id, expires_at) "
@@ -4312,6 +4321,17 @@ def claim_manual_task(task_id: int, worker_id: int) -> str:
         return "invalid_target"
     if not is_subscribed(worker_id, channel):
         return "not_subscribed"
+
+    # ─── Reservation: try to get existing or create new 15-min reservation ──
+    existing_reservation = get_active_manual_task_reservation(task_id)
+    if existing_reservation is not None:
+        if existing_reservation["worker_id"] != worker_id:
+            return "slot_held"
+        # Same worker already has active reservation — reuse it.
+    else:
+        reservation = create_manual_task_reservation(task_id, worker_id)
+        if reservation is None:
+            return "slot_held"
 
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -10328,6 +10348,7 @@ def callback_claim_manual(call):
         "proof_required": "📸 أرسل صورة لقطة الشاشة أولاً ليتم مراجعتها من الإدارة.",
         "invalid_target": "⚠️ هدف قناة Telegram غير صالح. راجع إعداد المهمة مع الإدارة.",
         "not_subscribed": "❌ لم يتم العثور على اشتراكك في القناة. اشترك أولاً ثم حاول مرة أخرى.",
+        "slot_held": "🔒 هذه المهمة محجوزة حالياً بعامل آخر. يرجى الانتظار أو المحاولة لاحقاً.",
     }
     bot.answer_callback_query(
         call.id,
