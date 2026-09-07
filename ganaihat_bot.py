@@ -2136,10 +2136,14 @@ def init_db():
                 status      TEXT NOT NULL DEFAULT 'active'
             )
         """)
+        # Drop old task-level index if it exists, then create slot-level index.
+        conn.execute(
+            "DROP INDEX IF EXISTS idx_manual_task_reservation_active"
+        )
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS "
             "idx_manual_task_reservation_active "
-            "ON manual_task_reservations(task_id) "
+            "ON manual_task_reservations(task_id, worker_id) "
             "WHERE status = 'active'"
         )
         conn.execute("""
@@ -3810,43 +3814,49 @@ _MANUAL_TASK_RESERVATION_MINUTES = 15
 
 def create_manual_task_reservation(task_id: int, worker_id: int,
                                   reservation_minutes: int = 15) -> dict | None:
-    """Create or return existing reservation for a manual task slot.
+    """Create or return an existing reservation for a manual task slot.
 
-    If the same worker already holds an active (non-expired) reservation,
-    returns that existing reservation without changing its expires_at.
+    Slot-level: multiple workers can each hold one reservation per task,
+    limited only by the task's quantity_remaining.
 
-    Returns the reservation dict on success, or None if the slot is already
-    held by another worker.
+    If the same worker already holds an active reservation, returns it
+    without changing expires_at.  Otherwise, checks slot availability
+    inside an IMMEDIATE transaction and creates a new reservation.
+
+    Returns the reservation dict on success, or None if no slot is available.
     """
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        # Lazy-expire any stale reservation for this task.
+        # Lazy-expire any stale reservations for this task.
         conn.execute(
             "UPDATE manual_task_reservations SET status = 'expired' "
             "WHERE task_id = ? AND status = 'active' AND expires_at < CURRENT_TIMESTAMP",
             (task_id,),
         )
-        # Check: is there an active reservation for this task?
+        # Check: does this worker already hold an active reservation?
         existing = conn.execute(
-            "SELECT worker_id, expires_at FROM manual_task_reservations "
-            "WHERE task_id = ? AND status = 'active' AND expires_at > CURRENT_TIMESTAMP",
-            (task_id,),
+            "SELECT * FROM manual_task_reservations "
+            "WHERE task_id = ? AND worker_id = ? AND status = 'active' "
+            "AND expires_at > CURRENT_TIMESTAMP",
+            (task_id, worker_id),
         ).fetchone()
         if existing is not None:
-            if existing["worker_id"] == worker_id:
-                # Same worker — return existing reservation, do NOT refresh.
-                conn.commit()
-                row = conn.execute(
-                    "SELECT * FROM manual_task_reservations "
-                    "WHERE task_id = ? AND status = 'active' AND worker_id = ?",
-                    (task_id, worker_id),
-                ).fetchone()
-                return dict(row) if row else None
-            else:
-                # Different worker holds the slot.
-                conn.rollback()
-                return None
-        # No active reservation — create a new one.
+            # Same worker — return existing, do NOT refresh.
+            return dict(existing)
+        # Count active reservations and fetch quantity_remaining.
+        active_count = conn.execute(
+            "SELECT COUNT(*) as cnt FROM manual_task_reservations "
+            "WHERE task_id = ? AND status = 'active' AND expires_at > CURRENT_TIMESTAMP",
+            (task_id,),
+        ).fetchone()["cnt"]
+        quantity = conn.execute(
+            "SELECT quantity_remaining FROM manual_tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if quantity is None or active_count >= quantity["quantity_remaining"]:
+            conn.rollback()
+            return None
+        # Create new reservation.
         row = conn.execute(
             "INSERT INTO manual_task_reservations "
             "(task_id, worker_id, expires_at) "
@@ -4329,29 +4339,15 @@ def claim_manual_task(task_id: int, worker_id: int) -> str:
     if not is_subscribed(worker_id, channel):
         return "not_subscribed"
 
-    # ─── Reservation: per-task duration; NULL/0 = no timer ──────────────────
+    # ─── Reservation: slot-level; NULL/0 = no timer ─────────────────────────
     task_reservation_minutes = task["reservation_minutes"]
-    if task_reservation_minutes and task_reservation_minutes > 0:
-        existing_reservation = get_active_manual_task_reservation(task_id)
-        if existing_reservation is not None:
-            if existing_reservation["worker_id"] != worker_id:
-                return "slot_held"
-            # Same worker already has active reservation — reuse it.
-        else:
-            # Count active reservations to check slot availability.
-            with get_connection() as _conn:
-                active_rsv_count = _conn.execute(
-                    "SELECT COUNT(*) as cnt FROM manual_task_reservations "
-                    "WHERE task_id = ? AND status = 'active' AND expires_at > CURRENT_TIMESTAMP",
-                    (task_id,),
-                ).fetchone()["cnt"]
-            if active_rsv_count >= task["quantity_remaining"]:
-                return "slot_held"
-            reservation = create_manual_task_reservation(
-                task_id, worker_id, task_reservation_minutes,
-            )
-            if reservation is None:
-                return "slot_held"
+    has_reservation = bool(task_reservation_minutes and task_reservation_minutes > 0)
+    if has_reservation:
+        reservation = create_manual_task_reservation(
+            task_id, worker_id, task_reservation_minutes,
+        )
+        if reservation is None:
+            return "slot_held"
 
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -4362,6 +4358,18 @@ def claim_manual_task(task_id: int, worker_id: int) -> str:
         ).fetchone()
         if task is None or task["status"] != "active" or task["quantity_remaining"] <= 0:
             return "unavailable"
+
+        # ── Validate reservation before completion ──────────────────────────
+        if has_reservation:
+            my_rsv = conn.execute(
+                "SELECT * FROM manual_task_reservations "
+                "WHERE task_id = ? AND worker_id = ? AND status = 'active' "
+                "AND expires_at > CURRENT_TIMESTAMP",
+                (task_id, worker_id),
+            ).fetchone()
+            if my_rsv is None:
+                return "reservation_expired"
+
         # Check repeat policy: one-time tasks block re-execution; repeatable
         # tasks allow re-execution after the cooldown from last completion.
         task_row = conn.execute(
@@ -4410,6 +4418,13 @@ def claim_manual_task(task_id: int, worker_id: int) -> str:
             "UPDATE users SET balance_usd_nano = balance_usd_nano + ? WHERE user_id = ?",
             (_task_reward_nano(task), worker_id),
         )
+        # Mark reservation as completed so it does not linger.
+        if has_reservation:
+            conn.execute(
+                "UPDATE manual_task_reservations SET status = 'completed' "
+                "WHERE task_id = ? AND worker_id = ? AND status = 'active'",
+                (task_id, worker_id),
+            )
         return "claimed"
 
 

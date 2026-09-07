@@ -150,10 +150,10 @@ class TestReservationWiring(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def _get_reservation(self, task_id):
+    def _get_reservation(self, task_id, status='active'):
         row = self.conn.execute(
-            "SELECT * FROM manual_task_reservations WHERE task_id = ? AND status = 'active'",
-            (task_id,),
+            "SELECT * FROM manual_task_reservations WHERE task_id = ? AND status = ?",
+            (task_id, status),
         ).fetchone()
         return dict(row) if row else None
 
@@ -168,10 +168,11 @@ class TestReservationWiring(unittest.TestCase):
         self.conn.commit()
 
     def test_reservation_created_on_claim(self):
-        """Worker reserves → 15 min reservation created."""
+        """Worker reserves → reservation created and marked completed after claim."""
         result = self.mod.claim_manual_task(self.task_id, 100)
         self.assertEqual(result, "claimed")
-        rsv = self._get_reservation(self.task_id)
+        # After claim, reservation is marked 'completed'
+        rsv = self._get_reservation(self.task_id, 'completed')
         self.assertIsNotNone(rsv)
         self.assertEqual(rsv["worker_id"], 100)
 
@@ -179,29 +180,22 @@ class TestReservationWiring(unittest.TestCase):
         """Same worker clicks again before expiry → expires_at unchanged."""
         result1 = self.mod.claim_manual_task(self.task_id, 100)
         self.assertEqual(result1, "claimed")
-        rsv1 = self._get_reservation(self.task_id)
+        rsv1 = self._get_reservation(self.task_id, 'completed')
         self.assertIsNotNone(rsv1)
         expires1 = rsv1["expires_at"]
         # Same worker cannot claim again (one_time + already_done)
         # but the reservation should still exist with same expires_at
-        rsv2 = self._get_reservation(self.task_id)
+        rsv2 = self._get_reservation(self.task_id, 'completed')
         self.assertIsNotNone(rsv2)
         self.assertEqual(rsv2["expires_at"], expires1)
 
-    def test_different_worker_blocked(self):
-        """Different worker tries during reservation → returns slot_held."""
+    def test_different_worker_can_claim_with_slot_level(self):
+        """Slot-level: different worker CAN claim if slots available."""
         # Worker 100 claims (creates reservation + completes)
         self.mod.claim_manual_task(self.task_id, 100)
-        # Worker 200 cannot claim (one_time task already done by 100,
-        # but also reservation would block if task were available)
-        task = self.conn.execute(
-            "SELECT quantity_remaining FROM manual_tasks WHERE id = ?",
-            (self.task_id,),
-        ).fetchone()
-        # If quantity still available, slot_held should be returned
-        if task["quantity_remaining"] > 0:
-            result = self.mod.claim_manual_task(self.task_id, 200)
-            self.assertEqual(result, "slot_held")
+        # Worker 200 can claim (slot-level: quantity_remaining=4 > 0)
+        result = self.mod.claim_manual_task(self.task_id, 200)
+        self.assertEqual(result, "claimed")
 
     def test_expired_reservation_allows_new_worker(self):
         """Reservation expires → worker can reserve again if task available."""
@@ -233,13 +227,13 @@ class TestReservationWiring(unittest.TestCase):
         self.assertIn(result, ("repeat_cooldown", "slot_held", "claimed"))
 
     def test_completion_ends_reservation(self):
-        """Successful completion leaves reservation active (lazy-expire handles cleanup)."""
+        """Successful completion marks reservation as completed."""
         result = self.mod.claim_manual_task(self.task_id, 100)
         self.assertEqual(result, "claimed")
-        # Reservation should still be active (serves as a lock for 15 min)
-        rsv = self._get_reservation(self.task_id)
+        # Reservation is marked 'completed' after successful claim
+        rsv = self._get_reservation(self.task_id, 'completed')
         self.assertIsNotNone(rsv)
-        self.assertEqual(rsv["status"], "active")
+        self.assertEqual(rsv["status"], "completed")
         self.assertEqual(rsv["worker_id"], 100)
 
     def test_completion_during_reservation(self):
@@ -328,10 +322,12 @@ class TestReservationHelpers(unittest.TestCase):
         self.assertIsNotNone(rsv2)
         self.assertEqual(rsv1["expires_at"], rsv2["expires_at"])
 
-    def test_different_worker_returns_none(self):
+    def test_different_worker_can_reserve(self):
+        """Slot-level: different worker CAN reserve if slots available."""
         self.mod.create_manual_task_reservation(self.task_id, 100)
         rsv = self.mod.create_manual_task_reservation(self.task_id, 200)
-        self.assertIsNone(rsv)
+        self.assertIsNotNone(rsv)
+        self.assertEqual(rsv["worker_id"], 200)
 
     def test_get_active_reservation(self):
         self.mod.create_manual_task_reservation(self.task_id, 100)

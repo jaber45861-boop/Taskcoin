@@ -212,10 +212,10 @@ class TestReservationMinutesClaim(unittest.TestCase):
         self.conn.close()
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def _get_reservation(self, task_id):
+    def _get_reservation(self, task_id, status='active'):
         row = self.conn.execute(
-            "SELECT * FROM manual_task_reservations WHERE task_id = ? AND status = 'active'",
-            (task_id,),
+            "SELECT * FROM manual_task_reservations WHERE task_id = ? AND status = ?",
+            (task_id, status),
         ).fetchone()
         return dict(row) if row else None
 
@@ -223,7 +223,8 @@ class TestReservationMinutesClaim(unittest.TestCase):
         task_id = _create_task(self.conn, reservation_minutes=5)
         result = self.mod.claim_manual_task(task_id, 100)
         self.assertEqual(result, "claimed")
-        rsv = self._get_reservation(task_id)
+        # After claim, reservation is marked 'completed'
+        rsv = self._get_reservation(task_id, 'completed')
         self.assertIsNotNone(rsv)
 
     def test_claim_no_reservation_when_none(self):
@@ -242,12 +243,12 @@ class TestReservationMinutesClaim(unittest.TestCase):
         rsv = self._get_reservation(task_id)
         self.assertIsNone(rsv)
 
-    def test_different_worker_blocked_during_reservation(self):
-        """Another worker cannot claim when reservation is active."""
-        task_id = _create_task(self.conn, reservation_minutes=15)
+    def test_different_worker_can_claim_slot_level(self):
+        """Slot-level: another worker CAN claim if slots available."""
+        task_id = _create_task(self.conn, reservation_minutes=15, quantity_remaining=5)
         self.mod.claim_manual_task(task_id, 100)
         result2 = self.mod.claim_manual_task(task_id, 200)
-        self.assertEqual(result2, "slot_held")
+        self.assertEqual(result2, "claimed")
 
     def test_same_worker_can_claim_without_timer(self):
         """Without timer, different workers can all claim (up to quantity)."""
@@ -262,12 +263,12 @@ class TestReservationMinutesClaim(unittest.TestCase):
         """Same worker clicking again doesn't refresh timer."""
         task_id = _create_task(self.conn, reservation_minutes=15)
         self.mod.claim_manual_task(task_id, 100)
-        rsv1 = self._get_reservation(task_id)
+        rsv1 = self._get_reservation(task_id, 'completed')
         self.assertIsNotNone(rsv1)
         expires1 = rsv1["expires_at"]
         # Worker tries again (will fail due to one_time, but reservation exists)
         self.mod.claim_manual_task(task_id, 100)
-        rsv2 = self._get_reservation(task_id)
+        rsv2 = self._get_reservation(task_id, 'completed')
         self.assertEqual(rsv2["expires_at"], expires1)
 
 

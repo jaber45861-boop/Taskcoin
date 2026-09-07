@@ -107,9 +107,9 @@ class TestReservationCreation(unittest.TestCase):
 
 
 class TestReservationExclusivity(unittest.TestCase):
-    """Only one active reservation per task at a time."""
+    """Slot-level: multiple workers can reserve up to quantity_remaining."""
 
-    def test_blocks_different_worker(self):
+    def test_allows_different_workers_up_to_quantity(self):
         bot, conn, path = _make_db()
         try:
             conn.execute(
@@ -121,20 +121,34 @@ class TestReservationExclusivity(unittest.TestCase):
             conn.commit()
             task_id = conn.execute("SELECT id FROM manual_tasks LIMIT 1").fetchone()["id"]
 
-            for uid in (300, 301):
+            for uid in (300, 301, 302):
                 conn.execute(
                     "INSERT INTO users (user_id, first_name, username, balance_usd_nano) "
                     "VALUES (?, 'U', 'u', 0)", (uid,)
                 )
             conn.commit()
 
-            # Worker 300 reserves first.
+            # Worker 300 reserves first slot.
             r1 = bot.create_manual_task_reservation(task_id, 300)
             self.assertIsNotNone(r1)
 
-            # Worker 301 must be blocked.
+            # Worker 301 reserves second slot.
             r2 = bot.create_manual_task_reservation(task_id, 301)
-            self.assertIsNone(r2)
+            self.assertIsNotNone(r2)
+
+            # Worker 302 reserves third slot.
+            r3 = bot.create_manual_task_reservation(task_id, 302)
+            self.assertIsNotNone(r3)
+
+            # All 3 slots taken — no more available.
+            for extra_uid in (400, 401):
+                conn.execute(
+                    "INSERT INTO users (user_id, first_name, username, balance_usd_nano) "
+                    "VALUES (?, 'U', 'u', 0)", (extra_uid,)
+                )
+            conn.commit()
+            r4 = bot.create_manual_task_reservation(task_id, 400)
+            self.assertIsNone(r4)
         finally:
             conn.close()
             os.unlink(path)
