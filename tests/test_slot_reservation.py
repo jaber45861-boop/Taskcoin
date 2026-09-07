@@ -574,6 +574,23 @@ class TestExpiredReservationPriorityOverQuantity(unittest.TestCase):
         result = self.mod.confirm_manual_task(task_id, 100)
         self.assertEqual(result, "unavailable")
 
+    def test_completed_reservation_not_treated_as_expired(self):
+        """Worker with a completed reservation and no active reservation
+        does NOT get 'reservation_expired' — completed is not expired."""
+        task_id = _create_task(self.conn, reservation_minutes=15, quantity_remaining=5)
+        # Insert a completed reservation
+        self.conn.execute(
+            "INSERT INTO manual_task_reservations "
+            "(task_id, worker_id, reserved_at, expires_at, status) "
+            "VALUES (?, ?, datetime('now', '-30 minutes'), "
+            "datetime('now', '-15 minutes'), 'completed')",
+            (task_id, 100),
+        )
+        self.conn.commit()
+        result = self.mod.confirm_manual_task(task_id, 100)
+        self.assertNotEqual(result, "reservation_expired")
+        # Completed reservation is not expired — falls through to normal flow
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4489,16 +4489,20 @@ def confirm_manual_task(task_id: int, worker_id: int) -> str:
             (task_id, worker_id),
         ).fetchone()
         if my_rsv is None:
-            # Check if worker ever had ANY reservation (active or expired)
+            # Check if worker had a reservation that expired or is overdue
+            # (not completed -- completed reservations are not 'expired')
             any_rsv = conn.execute(
                 "SELECT 1 FROM manual_task_reservations "
-                "WHERE task_id = ? AND worker_id = ? LIMIT 1",
+                "WHERE task_id = ? AND worker_id = ? AND ("
+                "(status = 'active' AND expires_at <= CURRENT_TIMESTAMP) "
+                "OR status = 'expired'"
+                ") LIMIT 1",
                 (task_id, worker_id),
             ).fetchone()
             if any_rsv is not None:
                 # Worker had a reservation that expired -> reservation_expired
                 return "reservation_expired"
-            # Worker never had a reservation -> fall through to original behavior
+            # No expired/overdue reservation -> fall through to original behavior
 
         # --- Quantity/status check (after reservation check) ---
         if task["status"] != "active" or task["quantity_remaining"] <= 0:
