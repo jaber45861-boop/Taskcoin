@@ -512,5 +512,68 @@ class TestReservationSeparation(unittest.TestCase):
         self.assertEqual(rsv1["expires_at"], rsv2["expires_at"])
 
 
+class TestExpiredReservationPriorityOverQuantity(unittest.TestCase):
+    """Regression: expired reservation must return 'reservation_expired'
+    even when quantity_remaining == 0, not 'unavailable'.
+    The reservation check must come before the quantity/status check."""
+
+    def setUp(self):
+        self.mod = _load_bot()
+        self.conn, self.tmpdir = _setup_db(self.mod)
+        _create_user(self.conn, 100)
+
+    def tearDown(self):
+        self.conn.close()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_expired_rsv_overrides_zero_quantity(self):
+        """Worker with expired reservation on task with quantity=0
+        gets 'reservation_expired', not 'unavailable'."""
+        task_id = _create_task(self.conn, reservation_minutes=5, quantity_remaining=0)
+        # Manually create an expired reservation for worker 100
+        self.conn.execute(
+            "INSERT INTO manual_task_reservations "
+            "(task_id, worker_id, reserved_at, expires_at, status) "
+            "VALUES (?, ?, datetime('now', '-10 minutes'), "
+            "datetime('now', '-5 minutes'), 'expired')",
+            (task_id, 100),
+        )
+        self.conn.commit()
+        result = self.mod.confirm_manual_task(task_id, 100)
+        self.assertEqual(result, "reservation_expired")
+
+    def test_expired_rsv_overrides_inactive_status(self):
+        """Worker with expired reservation on inactive task
+        gets 'reservation_expired', not 'unavailable'."""
+        task_id = _create_task(
+            self.conn, reservation_minutes=5, quantity_remaining=5, status="inactive"
+        )
+        self.conn.execute(
+            "INSERT INTO manual_task_reservations "
+            "(task_id, worker_id, reserved_at, expires_at, status) "
+            "VALUES (?, ?, datetime('now', '-10 minutes'), "
+            "datetime('now', '-5 minutes'), 'expired')",
+            (task_id, 100),
+        )
+        self.conn.commit()
+        result = self.mod.confirm_manual_task(task_id, 100)
+        self.assertEqual(result, "reservation_expired")
+
+    def test_active_rsv_still_checks_quantity(self):
+        """Worker with active reservation on task with quantity=0
+        gets 'unavailable' (quantity check still applies when reservation is active)."""
+        task_id = _create_task(self.conn, reservation_minutes=15, quantity_remaining=0)
+        self.mod.claim_manual_task(task_id, 100)
+        result = self.mod.confirm_manual_task(task_id, 100)
+        self.assertEqual(result, "unavailable")
+
+    def test_no_reservation_quantity_zero_returns_unavailable(self):
+        """Worker with no reservation on task with quantity=0
+        gets 'unavailable' (existing behavior preserved)."""
+        task_id = _create_task(self.conn, reservation_minutes=15, quantity_remaining=0)
+        result = self.mod.confirm_manual_task(task_id, 100)
+        self.assertEqual(result, "unavailable")
+
+
 if __name__ == "__main__":
     unittest.main()

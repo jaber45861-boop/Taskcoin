@@ -4478,10 +4478,10 @@ def confirm_manual_task(task_id: int, worker_id: int) -> str:
             "FROM manual_tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
-        if task is None or task["status"] != "active" or task["quantity_remaining"] <= 0:
+        if task is None:
             return "unavailable"
 
-        # --- Validate reservation ---
+        # --- Validate reservation (BEFORE quantity check) ---
         my_rsv = conn.execute(
             "SELECT * FROM manual_task_reservations "
             "WHERE task_id = ? AND worker_id = ? AND status = 'active' "
@@ -4489,7 +4489,20 @@ def confirm_manual_task(task_id: int, worker_id: int) -> str:
             (task_id, worker_id),
         ).fetchone()
         if my_rsv is None:
-            return "reservation_expired"
+            # Check if worker ever had ANY reservation (active or expired)
+            any_rsv = conn.execute(
+                "SELECT 1 FROM manual_task_reservations "
+                "WHERE task_id = ? AND worker_id = ? LIMIT 1",
+                (task_id, worker_id),
+            ).fetchone()
+            if any_rsv is not None:
+                # Worker had a reservation that expired -> reservation_expired
+                return "reservation_expired"
+            # Worker never had a reservation -> fall through to original behavior
+
+        # --- Quantity/status check (after reservation check) ---
+        if task["status"] != "active" or task["quantity_remaining"] <= 0:
+            return "unavailable"
 
         # --- Repeat policy check ---
         task_row = conn.execute(
