@@ -5574,6 +5574,7 @@ def main_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton("📋 المهام اليومية", callback_data="daily_tasks"),
         InlineKeyboardButton("🛒 متجر الخدمات",   callback_data="shop"),
     )
+    markup.add(InlineKeyboardButton("📩 التواصل مع الإدارة", callback_data="contact_admin"))
     markup.add(InlineKeyboardButton("💳 شحن الرصيد", callback_data="buy_points"))
     markup.add(InlineKeyboardButton("سحب الأرباح 💰", callback_data="withdraw_earnings"))
     return markup
@@ -9566,6 +9567,20 @@ def callback_admin_broadcast(call):
         ]]),
     )
     bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "contact_admin")
+def callback_contact_admin(call):
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        call.message.chat.id,
+        f"📩 <b>تواصل مع الإدارة</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"اضضغط على الزر أدناه للتحدث مع المشرف مباشرة:",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("📩 إرسال رسالة", url=f"tg://user?id={ADMIN_ID}"),
+        ]]),
+    )
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "admin_management"
