@@ -2451,12 +2451,12 @@ def get_inquiries_by_category(category: str, unread_only: bool = False) -> list[
     return [dict(r) for r in rows]
 
 
-def mark_inquiries_read(category: str) -> None:
-    """Mark all inquiries in a category as read by admin."""
+def mark_inquiry_read(inquiry_id: int) -> None:
+    """Mark a single inquiry as read by admin."""
     with get_connection() as conn:
         conn.execute(
-            "UPDATE user_inquiries SET is_read = 1 WHERE category = ? AND is_read = 0",
-            (category,),
+            "UPDATE user_inquiries SET is_read = 1 WHERE id = ?",
+            (inquiry_id,),
         )
         conn.commit()
 
@@ -2466,7 +2466,7 @@ def save_admin_reply(inquiry_id: int, reply_text: str) -> bool:
     with get_connection() as conn:
         cursor = conn.execute(
             "UPDATE user_inquiries SET admin_reply = ?, reply_at = CURRENT_TIMESTAMP, "
-            "is_read_by_user = 0 WHERE id = ?",
+            "is_read_by_user = 0, is_read = 1 WHERE id = ?",
             (reply_text, inquiry_id),
         )
         conn.commit()
@@ -9760,23 +9760,30 @@ def callback_user_inquiry_category(call):
     user_id = call.from_user.id
     label = CATEGORY_LABELS.get(cat, cat)
     # Check for unread admin replies
-    replies = get_replies_for_user(user_id, cat)
-    if replies:
-        # Show the most recent reply
-        inq = replies[0]
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM user_inquiries "
+            "WHERE user_id = ? AND category = ? AND admin_reply IS NOT NULL "
+            "AND is_read_by_user = 0 ORDER BY reply_at DESC",
+            (user_id, cat),
+        ).fetchall()
+    unread_replies = [dict(r) for r in rows]
+    if unread_replies:
+        inq = unread_replies[0]
         text = (
-            f"\U0001f514 <b>رد من الإدارة — {label}</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"\U0001f4ac <b>رسالتك:</b>\n{inq['message']}\n\n"
-            f"\U0001f4e9 <b>رد الإدارة:</b>\n{inq['admin_reply']}\n\n"
-            f"\U0001f4c5 <b>تاريخ الرد:</b> {inq['reply_at']}"
+            f"\U0001f514 <b>\u0631\u062f \u0645\u0646 \u0627\u0644\u0625\u062f\u0627\u0631\u0629 \u2014 {label}</b>\n"
+            f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+            f"\U0001f4ac <b>\u0631\u0633\u0627\u0644\u062a\u0643:</b>\n{inq['message']}\n\n"
+            f"\U0001f4e9 <b>\u0631\u062f \u0627\u0644\u0625\u062f\u0627\u0631\u0629:</b>\n{inq['admin_reply']}\n\n"
+            f"\U0001f4c5 <b>\u062a\u0627\u0631\u064a\u062e \u0627\u0644\u0631\u062f:</b> {inq['reply_at']}"
         )
         kb_rows = []
-        if len(replies) > 1:
+        if len(unread_replies) > 1:
             kb_rows.append([InlineKeyboardButton(
-                f"\u27a1\ufe0f التالية ({len(replies) - 1} متبقية)",
+                f"\u27a1\ufe0f \u0627\u0644\u062a\u0627\u0644\u064a\u0629 ({len(unread_replies) - 1} \u0645\u062a\u0628\u0642\u064a\u0629)",
                 callback_data=f"user_replies_next_{cat}",
             )])
+        kb_rows.append([InlineKeyboardButton("\U0001f4e8 \u0625\u0631\u0633\u0627\u0644 \u0631\u0633\u0627\u0644\u0629 \u062c\u062f\u064a\u062f\u0629", callback_data=f"contact_admin_{cat}")])
         kb_rows.append([InlineKeyboardButton("\u274c \u0625\u0644\u063a\u0627\u0621", callback_data="back_main")])
         bot.edit_message_text(
             text,
@@ -9789,7 +9796,7 @@ def callback_user_inquiry_category(call):
         user_state[user_id] = {"step": "awaiting_inquiry_message", "category": cat}
         bot.edit_message_text(
             f"\U0001f4ac <b>{label}</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
             f"\u0627\u0643\u062a\u0628 \u0631\u0633\u0627\u0644\u062a\u0643 \u0647\u0646\u0627:",
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
@@ -9877,39 +9884,39 @@ ADMIN_CATEGORY_MAP = {
 def callback_admin_category_view(call):
     cat = ADMIN_CATEGORY_MAP.get(call.data)
     if not cat:
-        bot.answer_callback_query(call.id, "⚠️ تصنيف غير معروف.", show_alert=True)
+        bot.answer_callback_query(call.id, "\u26a0\ufe0f \u062a\u0635\u0646\u064a\u0641 \u063a\u064a\u0631 \u0645\u0639\u0631\u0648\u064f\u0641.", show_alert=True)
         return
-    inquiries = get_inquiries_by_category(cat, unread_only=True)
+    inquiries = get_inquiries_by_category(cat, unread_only=False)
     label = CATEGORY_LABELS.get(cat, cat)
     if not inquiries:
-        bot.answer_callback_query(call.id, "✅ لا توجد رسائل غير مقروءة.", show_alert=True)
+        bot.answer_callback_query(call.id, "\u2705 \u0644\u0627 \u062a\u0648\u062c\u062f \u0631\u0633\u0627\u0626\u0644 \u0641\u064a \u0647\u0630\u0627 \u0627\u0644\u062a\u0635\u0646\u064a\u0641.", show_alert=True)
         return
-    # Show the most recent unread inquiry
+    # Show the most recent inquiry
     inq = inquiries[0]
     user = get_user(inq["user_id"])
     user_name = ""
     if user:
         user_name = user.get("username") or user.get("first_name") or str(inq["user_id"])
+    status = "\U0001f4e2 جديد" if not inq["is_read"] else "\U0001f4ac " + ("\u2709\ufe0f رد:" + inq["admin_reply"][:50] if inq.get("admin_reply") else "\u2796 \u0645\u0642\u0631\u0648\u0621")
     text = (
         f"{label}\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"👤 <b>المستخدم:</b> {user_name} (<code>{inq['user_id']}</code>)\n"
-        f"📅 <b>التاريخ:</b> {inq['created_at']}\n"
-        f"🆔 <b>رقم:</b> <code>{inq['id']}</code>\n\n"
-        f"💬 <b>الرسالة:</b>\n{inq['message']}"
+        f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+        f"\U0001f464 <b>\u0627\u0644\u0645\u0633\u062a\u062e\u062f\u0645:</b> {user_name} (<code>{inq['user_id']}</code>)\n"
+        f"\U0001f4c5 <b>\u0627\u0644\u062a\u0627\u0631\u064a\u062e:</b> {inq['created_at']}\n"
+        f"\U0001f194 <b>\u0631\u0642\u0645:</b> <code>{inq['id']}</code>  |  {status}\n\n"
+        f"\U0001f4ac <b>\u0627\u0644\u0631\u0633\u0627\u0644\u0629:</b>\n{inq['message']}"
     )
     kb_rows = []
     kb_rows.append([InlineKeyboardButton(
-        f"✉️ رد على #{inq['id']}",
+        f"\u2709\ufe0f \u0631\u062f \u0639\u0644\u0649 #{inq['id']}",
         callback_data=f"admin_reply_{inq['id']}",
     )])
-    # Navigation between unread messages
     if len(inquiries) > 1:
         kb_rows.append([InlineKeyboardButton(
-            f"➡️ التالية ({len(inquiries) - 1} متبقية)",
+            f"\u27a1\ufe0f \u0627\u0644\u062a\u0627\u0644\u064a\u0629 ({len(inquiries) - 1} \u0645\u062a\u0628\u0642\u064a\u0629)",
             callback_data=f"admin_inq_next_{cat}",
         )])
-    kb_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin_management")])
+    kb_rows.append([InlineKeyboardButton("\U0001f519 \u0631\u062c\u0648\u0639", callback_data="admin_management")])
     bot.edit_message_text(
         text,
         chat_id=call.message.chat.id,
@@ -9918,17 +9925,21 @@ def callback_admin_category_view(call):
     )
     bot.answer_callback_query(call.id)
 
-
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_inq_next_")
                              and is_admin(call.from_user.id))
 def callback_admin_inq_next(call):
     cat = call.data.replace("admin_inq_next_", "")
-    mark_inquiries_read(cat)
-    # Re-fetch to show next unread
+    # Get all inquiries and find the next one after the current displayed
+    # The current one is shown by the view, just mark it read and re-fetch
+    inquiries = get_inquiries_by_category(cat, unread_only=False)
+    if not inquiries:
+        bot.answer_callback_query(call.id, "\u2705 \u0644\u0627 \u062a\u0648\u062c\u062f \u0631\u0633\u0627\u0626\u0644.", show_alert=True)
+        return
+    # Mark the first (current) as read and show next
+    mark_inquiry_read(inquiries[0]["id"])
+    # Re-trigger the view to show next unread or next in list
     callback_admin_category_view(call)
 
-
-# ─── رد الأدمن على استفسار ────────────────────────────────────────────────
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_reply_")
                              and is_admin(call.from_user.id))
 def callback_admin_reply_start(call):
@@ -10009,51 +10020,85 @@ def callback_user_replies(call):
     cat_key = call.data.replace("user_replies_", "")
     cat = INQUIRY_CATEGORIES.get(cat_key, cat_key)
     user_id = call.from_user.id
-    replies = get_replies_for_user(user_id, cat)
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM user_inquiries "
+            "WHERE user_id = ? AND category = ? AND admin_reply IS NOT NULL "
+            "AND is_read_by_user = 0 ORDER BY reply_at DESC",
+            (user_id, cat),
+        ).fetchall()
+    replies = [dict(r) for r in rows]
     label = CATEGORY_LABELS.get(cat, cat)
     if not replies:
-        bot.answer_callback_query(call.id, "✅ لا توجد ردود جديدة.", show_alert=True)
+        bot.answer_callback_query(call.id, "\u2705 \u0644\u0627 \u062a\u0648\u062c\u062f \u0631\u0633\u0627\u0626\u0644 \u062c\u062f\u064a\u062f\u0629.", show_alert=True)
         return
-    # Show the most recent reply
     inq = replies[0]
     text = (
-        f"🔔 <b>رد من الإدارة — {label}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"💬 <b>رسالتك:</b>\n{inq['message']}\n\n"
-        f"📩 <b>رد الإدارة:</b>\n{inq['admin_reply']}\n\n"
-        f"📅 <b>تاريخ الرد:</b> {inq['reply_at']}"
+        f"\U0001f514 <b>\u0631\u062f \u0645\u0646 \u0627\u0644\u0625\u062f\u0627\u0631\u0629 \u2014 {label}</b>\n"
+        f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+        f"\U0001f4ac <b>\u0631\u0633\u0627\u0644\u062a\u0643:</b>\n{inq['message']}\n\n"
+        f"\U0001f4e9 <b>\u0631\u062f \u0627\u0644\u0625\u062f\u0627\u0631\u0629:</b>\n{inq['admin_reply']}\n\n"
+        f"\U0001f4c5 <b>\u062a\u0627\u0631\u064a\u062e \u0627\u0644\u0631\u062f:</b> {inq['reply_at']}"
     )
     kb_rows = []
     if len(replies) > 1:
         kb_rows.append([InlineKeyboardButton(
-            f"➡️ التالية ({len(replies) - 1} متبقية)",
+            f"\u27a1\ufe0f \u0627\u0644\u062a\u0627\u0644\u064a\u0629 ({len(replies) - 1} \u0645\u062a\u0628\u0642\u064a\u0629)",
             callback_data=f"user_replies_next_{cat}",
         )])
-    kb_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_main")])
+    kb_rows.append([InlineKeyboardButton("\U0001f4e8 \u0625\u0631\u0633\u0627\u0644 \u0631\u0633\u0627\u0644\u0629 \u062c\u062f\u064a\u062f\u0629", callback_data=f"contact_admin_{cat}")])
+    kb_rows.append([InlineKeyboardButton("\u274c \u0625\u0644\u063a\u0627\u0621", callback_data="back_main")])
     bot.edit_message_text(
         text,
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
         reply_markup=InlineKeyboardMarkup(kb_rows),
     )
-    # Mark as read
     mark_replies_read_for_user(user_id, cat)
     bot.answer_callback_query(call.id)
-
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("user_replies_next_"))
 def callback_user_replies_next(call):
     cat_key = call.data.replace("user_replies_next_", "")
     cat = INQUIRY_CATEGORIES.get(cat_key, cat_key)
-    # Already marked as read on first view, just show remaining
-    replies = get_replies_for_user(call.from_user.id, cat)
+    user_id = call.from_user.id
+    # Fetch remaining unread replies
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM user_inquiries "
+            "WHERE user_id = ? AND category = ? AND admin_reply IS NOT NULL "
+            "AND is_read_by_user = 0 ORDER BY reply_at DESC",
+            (user_id, cat),
+        ).fetchall()
+    replies = [dict(r) for r in rows]
     if not replies:
-        bot.answer_callback_query(call.id, "✅ لا توجد ردود أخرى.", show_alert=True)
+        bot.answer_callback_query(call.id, "\u2705 \u0644\u0627 \u062a\u0648\u062c\u062f \u0631\u0633\u0627\u0626\u0644 \u0623\u062e\u0631\u0649.", show_alert=True)
         return
-    # Re-trigger the view
-    call.data = f"user_replies_{cat_key}"
-    callback_user_replies(call)
-
+    label = CATEGORY_LABELS.get(cat, cat)
+    inq = replies[0]
+    text = (
+        f"\U0001f514 <b>\u0631\u062f \u0645\u0646 \u0627\u0644\u0625\u062f\u0627\u0631\u0629 \u2014 {label}</b>\n"
+        f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+        f"\U0001f4ac <b>\u0631\u0633\u0627\u0644\u062a\u0643:</b>\n{inq['message']}\n\n"
+        f"\U0001f4e9 <b>\u0631\u062f \u0627\u0644\u0625\u062f\u0627\u0631\u0629:</b>\n{inq['admin_reply']}\n\n"
+        f"\U0001f4c5 <b>\u062a\u0627\u0631\u064a\u062e \u0627\u0644\u0631\u062f:</b> {inq['reply_at']}"
+    )
+    kb_rows = []
+    if len(replies) > 1:
+        kb_rows.append([InlineKeyboardButton(
+            f"\u27a1\ufe0f \u0627\u0644\u062a\u0627\u0644\u064a\u0629 ({len(replies) - 1} \u0645\u062a\u0628\u0642\u064a\u0629)",
+            callback_data=f"user_replies_next_{cat}",
+        )])
+    kb_rows.append([InlineKeyboardButton("\U0001f4e8 \u0625\u0631\u0633\u0627\u0644 \u0631\u0633\u0627\u0644\u0629 \u062c\u062f\u064a\u062f\u0629", callback_data=f"contact_admin_{cat}")])
+    kb_rows.append([InlineKeyboardButton("\u274c \u0625\u0644\u063a\u0627\u0621", callback_data="back_main")])
+    bot.edit_message_text(
+        text,
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=InlineKeyboardMarkup(kb_rows),
+    )
+    mark_replies_read_for_user(user_id, cat)
+    bot.answer_callback_query(call.id)
 
 @bot.callback_query_handler(func=lambda call: call.data == "admin_messages"
                              and is_admin(call.from_user.id))
