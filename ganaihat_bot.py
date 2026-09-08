@@ -9883,6 +9883,52 @@ ADMIN_CATEGORY_MAP = {
 }
 
 
+# ─── فتح تصنيف رسائل المستخدمين ─────────────────────────────────────
+@bot.callback_query_handler(func=lambda call: call.data in ADMIN_CATEGORY_MAP
+                             and is_admin(call.from_user.id))
+def callback_admin_open_category(call):
+    category = ADMIN_CATEGORY_MAP[call.data]
+    label = CATEGORY_LABELS.get(category, category)
+    conn = get_db()
+    msg = conn.execute(
+        "SELECT * FROM user_inquiries WHERE category = ? ORDER BY is_read ASC, created_at ASC LIMIT 1",
+        (category,),
+    ).fetchone()
+
+    if not msg:
+        bot.answer_callback_query(call.id, f"📥 {label}: لا توجد رسائل.", show_alert=True)
+        return
+
+    user = get_user(msg["user_id"])
+    user_name = ""
+    if user:
+        user_name = user["username"] or user["first_name"] or str(msg["user_id"])
+
+    status_icon = "🆕" if msg["is_read"] == 0 else "➖"
+    admin_reply = ""
+    if msg["admin_reply"]:
+        admin_reply = f"\n\n<b>✉️ رد الإدارة:</b>\n{msg['admin_reply']}"
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("↩️ رد", callback_data=f"admin_reply_{msg['id']}")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="admin_management")],
+    ])
+
+    bot.edit_message_text(
+        f"📥 <b>{label}</b> — الرسائل\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{status_icon} <b>#{msg['id']}</b>\n"
+        f"👤 <b>المستخدم:</b> {user_name} (<code>{msg['user_id']}</code>)\n"
+        f"💬 <b>الرسالة:</b>\n{msg['message']}"
+        f"{admin_reply}\n\n"
+        f"🕐 {msg['created_at']}",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=kb,
+    )
+    bot.answer_callback_query(call.id)
+
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_reply_")
                              and is_admin(call.from_user.id))
 def callback_admin_reply_start(call):
