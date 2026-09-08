@@ -9933,16 +9933,51 @@ def callback_admin_category_view(call):
                              and is_admin(call.from_user.id))
 def callback_admin_inq_next(call):
     cat = call.data.replace("admin_inq_next_", "")
-    # Get all inquiries and find the next one after the current displayed
-    # The current one is shown by the view, just mark it read and re-fetch
     inquiries = get_inquiries_by_category(cat, unread_only=False)
     if not inquiries:
         bot.answer_callback_query(call.id, "\u2705 \u0644\u0627 \u062a\u0648\u062c\u062f \u0631\u0633\u0627\u0626\u0644.", show_alert=True)
         return
-    # Mark the first (current) as read and show next
+    # Mark current (first) as read
     mark_inquiry_read(inquiries[0]["id"])
-    # Re-trigger the view to show next unread or next in list
-    callback_admin_category_view(call)
+    # Re-fetch after marking read
+    remaining = get_inquiries_by_category(cat, unread_only=False)
+    if not remaining:
+        bot.answer_callback_query(call.id, "\u2705 \u0644\u0627 \u062a\u0648\u062c\u062f \u0631\u0633\u0627\u0626\u0644 \u0623\u062e\u0631\u0649.", show_alert=True)
+        return
+    # Build the display for the next message
+    inq = remaining[0]
+    user = get_user(inq["user_id"])
+    user_name = ""
+    if user:
+        user_name = user["username"] or user["first_name"] or str(inq["user_id"])
+    label = CATEGORY_LABELS.get(cat, cat)
+    status = "\U0001f4e2 \u062c\u062f\u064a\u062f" if not inq["is_read"] else "\U0001f4ac " + ("\u2709\ufe0f \u0631\u062f:" + inq["admin_reply"][:50] if inq.get("admin_reply") else "\u2796 \u0645\u0642\u0631\u0648\u0621")
+    text = (
+        f"{label}\n"
+        f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+        f"\U0001f464 <b>\u0627\u0644\u0645\u0633\u062a\u062e\u062f\u0645:</b> {user_name} (<code>{inq['user_id']}</code>)\n"
+        f"\U0001f4c5 <b>\u0627\u0644\u062a\u0627\u0631\u064a\u062e:</b> {inq['created_at']}\n"
+        f"\U0001f194 <b>\u0631\u0642\u0645:</b> <code>{inq['id']}</code>  |  {status}\n\n"
+        f"\U0001f4ac <b>\u0627\u0644\u0631\u0633\u0627\u0644\u0629:</b>\n{inq['message']}"
+    )
+    kb_rows = []
+    kb_rows.append([InlineKeyboardButton(
+        f"\u2709\ufe0f \u0631\u062f \u0639\u0644\u0649 #{inq['id']}",
+        callback_data=f"admin_reply_{inq['id']}",
+    )])
+    if len(remaining) > 1:
+        kb_rows.append([InlineKeyboardButton(
+            f"\u27a1\ufe0f \u0627\u0644\u062a\u0627\u0644\u064a\u0629 ({len(remaining) - 1} \u0645\u062a\u0628\u0642\u064a\u0629)",
+            callback_data=f"admin_inq_next_{cat}",
+        )])
+    kb_rows.append([InlineKeyboardButton("\U0001f519 \u0631\u062c\u0648\u0639", callback_data="admin_management")])
+    bot.edit_message_text(
+        text,
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=InlineKeyboardMarkup(kb_rows),
+    )
+    bot.answer_callback_query(call.id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_reply_")
                              and is_admin(call.from_user.id))
@@ -9990,7 +10025,7 @@ def handle_admin_reply(message):
     cat = state.get("category")
     reply_text = (message.text or "").strip()
     if not reply_text:
-        bot.send_message(message.chat.id, "⚠️ الرد فارغ. أرسل نصاً أو اضغط /start للإلغاء.")
+        bot.send_message(message.chat.id, "\u26a0\ufe0f \u0627\u0644\u0631\u062f \u0641\u0627\u0631\u063a. \u0623\u0631\u0633\u0644 \u0646\u0635\u0627 \u0623\u0648 \u0627\u0636\u063a\u0637 /start \u0644\u0644\u0625\u0644\u063a\u0627\u0621.")
         return
     ok = save_admin_reply(inquiry_id, reply_text)
     if ok:
@@ -10000,25 +10035,59 @@ def handle_admin_reply(message):
         try:
             bot.send_message(
                 inq["user_id"],
-                f"🔔 <b>رد جديد من الإدارة!</b>\n\n"
-                f"📌 <b>التصنيف:</b> {label}\n"
-                f"🆔 <b>رقم الاستفسار:</b> <code>{inquiry_id}</code>\n\n"
-                f"💬 <b>الرد:</b>\n{reply_text}",
+                f"\U0001f514 <b>\u0631\u062f \u062c\u062f\u064a\u062f \u0645\u0646 \u0627\u0644\u0625\u062f\u0627\u0631\u0629!</b>\n\n"
+                f"\U0001f4cc <b>\u0627\u0644\u062a\u0635\u0646\u064a\u0641:</b> {label}\n"
+                f"\U0001f194 <b>\u0631\u0642\u0645 \u0627\u0644\u0627\u0633\u062a\u0641\u0633\u0627\u0631:</b> <code>{inquiry_id}</code>\n\n"
+                f"\U0001f4ac <b>\u0627\u0644\u0631\u062f:</b>\n{reply_text}",
             )
         except Exception:
             pass
-        bot.send_message(
-            message.chat.id,
-            f"✅ <b>تم إرسال الرد بنجاح!</b>\n\n"
-            f"📌 <b>التصنيف:</b> {label}\n"
-            f"🆔 <b>رقم الاستفسار:</b> <code>{inquiry_id}</code>",
-            reply_markup=admin_keyboard(),
-        )
+        # Stay in same category: show next message or go back to category
+        remaining = get_inquiries_by_category(cat, unread_only=False)
+        # Filter out the one we just replied to — show next un-replied or next in list
+        remaining = [r for r in remaining if r["id"] != inquiry_id]
+        if remaining:
+            # Build inline keyboard to show next message
+            inq2 = remaining[0]
+            user2 = get_user(inq2["user_id"])
+            user_name2 = ""
+            if user2:
+                user_name2 = user2["username"] or user2["first_name"] or str(inq2["user_id"])
+            status2 = "\U0001f4e2 \u062c\u062f\u064a\u062f" if not inq2["is_read"] else "\U0001f4ac " + ("\u2709\ufe0f \u0631\u062f:" + (inq2.get("admin_reply") or "")[:50] if inq2.get("admin_reply") else "\u2796 \u0645\u0642\u0631\u0648\u0621")
+            text2 = (
+                f"{label}\n"
+                f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+                f"\u2705 <b>\u062a\u0645 \u0625\u0631\u0633\u0627\u0644 \u0627\u0644\u0631\u062f \u0639\u0644\u0649 #{inquiry_id}</b>\n\n"
+                f"\U0001f464 <b>\u0627\u0644\u0645\u0633\u062a\u062e\u062f\u0645:</b> {user_name2} (<code>{inq2['user_id']}</code>)\n"
+                f"\U0001f4c5 <b>\u0627\u0644\u062a\u0627\u0631\u064a\u062e:</b> {inq2['created_at']}\n"
+                f"\U0001f194 <b>\u0631\u0642\u0645:</b> <code>{inq2['id']}</code>  |  {status2}\n\n"
+                f"\U0001f4ac <b>\u0627\u0644\u0631\u0633\u0627\u0644\u0629:</b>\n{inq2['message']}"
+            )
+            kb_rows = []
+            kb_rows.append([InlineKeyboardButton(
+                f"\u2709\ufe0f \u0631\u062f \u0639\u0644\u0649 #{inq2['id']}",
+                callback_data=f"admin_reply_{inq2['id']}",
+            )])
+            if len(remaining) > 1:
+                kb_rows.append([InlineKeyboardButton(
+                    f"\u27a1\ufe0f \u0627\u0644\u062a\u0627\u0644\u064a\u0629 ({len(remaining) - 1} \u0645\u062a\u0628\u0642\u064a\u0629)",
+                    callback_data=f"admin_inq_next_{cat}",
+                )])
+            kb_rows.append([InlineKeyboardButton("\U0001f519 \u0631\u062c\u0648\u0639", callback_data="admin_management")])
+            bot.send_message(
+                message.chat.id, text2,
+                reply_markup=InlineKeyboardMarkup(kb_rows),
+            )
+        else:
+            bot.send_message(
+                message.chat.id,
+                f"\u2705 <b>\u062a\u0645 \u0625\u0631\u0633\u0627\u0644 \u0627\u0644\u0631\u062f \u0639\u0644\u0649 #{inquiry_id}</b>\n\n"
+                f"\u2705 \u0644\u0627 \u062a\u0648\u062c\u062f \u0631\u0633\u0627\u0626\u0644 \u0623\u062e\u0631\u0649 \u0641\u064a \u0647\u0630\u0627 \u0627\u0644\u062a\u0635\u0646\u064a\u0641.",
+                reply_markup=admin_keyboard(user_id),
+            )
     else:
-        bot.send_message(message.chat.id, "❌ تعذر إرسال الرد.")
+        bot.send_message(message.chat.id, "\u274c \u062a\u0639\u0630\u0631 \u0625\u0631\u0633\u0627\u0644 \u0627\u0644\u0631\u062f.")
 
-
-# ─── عرض الردود للمستخدم ────────────────────────────────────────────────────
 @bot.callback_query_handler(func=lambda call: call.data.startswith("user_replies_"))
 def callback_user_replies(call):
     cat_key = call.data.replace("user_replies_", "")
