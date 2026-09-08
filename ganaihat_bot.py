@@ -2369,6 +2369,21 @@ def init_db():
                 created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        inquiry_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(user_inquiries)")
+        }
+        if "admin_reply" not in inquiry_columns:
+            conn.execute(
+                "ALTER TABLE user_inquiries ADD COLUMN admin_reply TEXT"
+            )
+        if "reply_at" not in inquiry_columns:
+            conn.execute(
+                "ALTER TABLE user_inquiries ADD COLUMN reply_at DATETIME"
+            )
+        if "is_read_by_user" not in inquiry_columns:
+            conn.execute(
+                "ALTER TABLE user_inquiries ADD COLUMN is_read_by_user INTEGER NOT NULL DEFAULT 1"
+            )
         conn.commit()
     refresh_promotion_packages()
     refresh_required_channels()
@@ -2437,11 +2452,68 @@ def get_inquiries_by_category(category: str, unread_only: bool = False) -> list[
 
 
 def mark_inquiries_read(category: str) -> None:
-    """Mark all inquiries in a category as read."""
+    """Mark all inquiries in a category as read by admin."""
     with get_connection() as conn:
         conn.execute(
             "UPDATE user_inquiries SET is_read = 1 WHERE category = ? AND is_read = 0",
             (category,),
+        )
+        conn.commit()
+
+
+def save_admin_reply(inquiry_id: int, reply_text: str) -> bool:
+    """Save admin reply to an inquiry. Returns True on success."""
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "UPDATE user_inquiries SET admin_reply = ?, reply_at = CURRENT_TIMESTAMP, "
+            "is_read_by_user = 0 WHERE id = ?",
+            (reply_text, inquiry_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def get_inquiry_by_id(inquiry_id: int) -> dict | None:
+    """Fetch a single inquiry by ID."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM user_inquiries WHERE id = ?", (inquiry_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_unread_reply_counts(user_id: int) -> dict[str, int]:
+    """Return {category: unread_reply_count} for a specific user."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT category, COUNT(*) as cnt FROM user_inquiries "
+            "WHERE user_id = ? AND admin_reply IS NOT NULL AND is_read_by_user = 0 "
+            "GROUP BY category",
+            (user_id,),
+        ).fetchall()
+    return {row["category"]: row["cnt"] for row in rows}
+
+
+def get_replies_for_user(user_id: int, category: str) -> list[dict]:
+    """Fetch inquiries with admin replies for a user in a category."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM user_inquiries "
+            "WHERE user_id = ? AND category = ? AND admin_reply IS NOT NULL "
+            "ORDER BY reply_at DESC",
+            (user_id, category),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_replies_read_for_user(user_id: int, category: str) -> None:
+    """Mark admin replies as read by user."""
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE user_inquiries SET is_read_by_user = 1 "
+            "WHERE user_id = ? AND category = ? AND admin_reply IS NOT NULL "
+            "AND is_read_by_user = 0",
+            (user_id, category),
         )
         conn.commit()
 
@@ -9655,13 +9727,21 @@ def callback_admin_broadcast(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == "contact_admin")
 def callback_contact_admin(call):
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💸 السحب", callback_data="contact_admin_withdrawals")],
-        [InlineKeyboardButton("💰 الشحن", callback_data="contact_admin_topup")],
-        [InlineKeyboardButton("🛒 الأوردرات", callback_data="contact_admin_orders")],
-        [InlineKeyboardButton("📋 المهام", callback_data="contact_admin_tasks")],
-        [InlineKeyboardButton("💬 استفسار عام", callback_data="contact_admin_general")],
-    ])
+    user_id = call.from_user.id
+    reply_counts = get_unread_reply_counts(user_id)
+    cat_map = {
+        "contact_admin_withdrawals": ("withdrawals", "💸", "السحب"),
+        "contact_admin_topup": ("topup", "💰", "الشحن"),
+        "contact_admin_orders": ("orders", "🛒", "الأوردرات"),
+        "contact_admin_tasks": ("tasks", "📋", "المهام"),
+        "contact_admin_general": ("general", "💬", "استفسار عام"),
+    }
+    kb_rows = []
+    for cb_data, (cat_key, emoji, text) in cat_map.items():
+        n = reply_counts.get(cat_key, 0)
+        label = f"{emoji} {text} 🔔({n})" if n else f"{emoji} {text}"
+        kb_rows.append([InlineKeyboardButton(label, callback_data=cb_data)])
+    kb = InlineKeyboardMarkup(kb_rows)
     bot.edit_message_text(
         "💬 <b>إيه الموضوع اللي عايز تتواصل بخصوصه؟</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -9671,27 +9751,53 @@ def callback_contact_admin(call):
         reply_markup=kb,
     )
     bot.answer_callback_query(call.id)
-# ─── تصنيفات التواصل مع الإدارة (المستخدم) ─────────────────────────────────
 @bot.callback_query_handler(func=lambda call: call.data in INQUIRY_CATEGORIES)
 def callback_user_inquiry_category(call):
     cat = INQUIRY_CATEGORIES.get(call.data)
     if not cat:
-        bot.answer_callback_query(call.id, "⚠️ تصنيف غير معروف.", show_alert=True)
+        bot.answer_callback_query(call.id, "\u26a0\ufe0f \u062a\u0635\u0646\u064a\u0641 \u063a\u064a\u0631 \u0645\u0639\u0631\u0648\u0641.", show_alert=True)
         return
-    user_state[call.from_user.id] = {"step": "awaiting_inquiry_message", "category": cat}
+    user_id = call.from_user.id
     label = CATEGORY_LABELS.get(cat, cat)
-    bot.edit_message_text(
-        f"💬 <b>{label}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"اكتب رسالتك هنا:",
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("❌ إلغاء", callback_data="back_main"),
-        ]]),
-    )
+    # Check for unread admin replies
+    replies = get_replies_for_user(user_id, cat)
+    if replies:
+        # Show the most recent reply
+        inq = replies[0]
+        text = (
+            f"\U0001f514 <b>رد من الإدارة — {label}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"\U0001f4ac <b>رسالتك:</b>\n{inq['message']}\n\n"
+            f"\U0001f4e9 <b>رد الإدارة:</b>\n{inq['admin_reply']}\n\n"
+            f"\U0001f4c5 <b>تاريخ الرد:</b> {inq['reply_at']}"
+        )
+        kb_rows = []
+        if len(replies) > 1:
+            kb_rows.append([InlineKeyboardButton(
+                f"\u27a1\ufe0f التالية ({len(replies) - 1} متبقية)",
+                callback_data=f"user_replies_next_{cat}",
+            )])
+        kb_rows.append([InlineKeyboardButton("\u274c \u0625\u0644\u063a\u0627\u0621", callback_data="back_main")])
+        bot.edit_message_text(
+            text,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=InlineKeyboardMarkup(kb_rows),
+        )
+        mark_replies_read_for_user(user_id, cat)
+    else:
+        user_state[user_id] = {"step": "awaiting_inquiry_message", "category": cat}
+        bot.edit_message_text(
+            f"\U0001f4ac <b>{label}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"\u0627\u0643\u062a\u0628 \u0631\u0633\u0627\u0644\u062a\u0643 \u0647\u0646\u0627:",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("\u274c \u0625\u0644\u063a\u0627\u0621", callback_data="back_main"),
+            ]]),
+        )
     bot.answer_callback_query(call.id)
-
 
 @bot.message_handler(
     func=lambda m: m.from_user.id in user_state
@@ -9717,8 +9823,7 @@ def handle_inquiry_message(message):
     )
 
 
-@bot.callback_query_handler(func=lambda call: call.data == "admin_management"@bot.callback_query_handler(func=lambda call: call.data == "admin_management"
-                             and is_admin(call.from_user.id))
+@bot.callback_query_handler(func=lambda call: call.data == "admin_management"
                              and is_admin(call.from_user.id))
 def callback_admin_management(call):
     counts = get_unread_inquiry_counts()
@@ -9794,6 +9899,10 @@ def callback_admin_category_view(call):
         f"💬 <b>الرسالة:</b>\n{inq['message']}"
     )
     kb_rows = []
+    kb_rows.append([InlineKeyboardButton(
+        f"✉️ رد على #{inq['id']}",
+        callback_data=f"admin_reply_{inq['id']}",
+    )])
     # Navigation between unread messages
     if len(inquiries) > 1:
         kb_rows.append([InlineKeyboardButton(
@@ -9817,6 +9926,133 @@ def callback_admin_inq_next(call):
     mark_inquiries_read(cat)
     # Re-fetch to show next unread
     callback_admin_category_view(call)
+
+
+# ─── رد الأدمن على استفسار ────────────────────────────────────────────────
+@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_reply_")
+                             and is_admin(call.from_user.id))
+def callback_admin_reply_start(call):
+    inquiry_id = int(call.data.replace("admin_reply_", ""))
+    inq = get_inquiry_by_id(inquiry_id)
+    if not inq:
+        bot.answer_callback_query(call.id, "⚠️ الاستفسار غير موجود.", show_alert=True)
+        return
+    user_state[call.from_user.id] = {
+        "step": "awaiting_admin_reply",
+        "inquiry_id": inquiry_id,
+        "category": inq["category"],
+    }
+    label = CATEGORY_LABELS.get(inq["category"], inq["category"])
+    user = get_user(inq["user_id"])
+    user_name = ""
+    if user:
+        user_name = user.get("username") or user.get("first_name") or str(inq["user_id"])
+    bot.edit_message_text(
+        f"✉️ <b>رد على استفسار #{inquiry_id}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 <b>المستخدم:</b> {user_name} (<code>{inq['user_id']}</code>)\n"
+        f"📌 <b>التصنيف:</b> {label}\n"
+        f"💬 <b>الرسالة:</b>\n{inq['message']}\n\n"
+        f"اكتب ردك الآن:",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ إلغاء", callback_data="admin_management"),
+        ]]),
+    )
+    bot.answer_callback_query(call.id)
+
+
+@bot.message_handler(
+    func=lambda m: m.from_user.id in user_state
+    and user_state[m.from_user.id].get("step") == "awaiting_admin_reply"
+    and is_admin(m.from_user.id)
+)
+def handle_admin_reply(message):
+    user_id = message.from_user.id
+    state = user_state.pop(user_id, {})
+    inquiry_id = state.get("inquiry_id")
+    cat = state.get("category")
+    reply_text = (message.text or "").strip()
+    if not reply_text:
+        bot.send_message(message.chat.id, "⚠️ الرد فارغ. أرسل نصاً أو اضغط /start للإلغاء.")
+        return
+    ok = save_admin_reply(inquiry_id, reply_text)
+    if ok:
+        inq = get_inquiry_by_id(inquiry_id)
+        label = CATEGORY_LABELS.get(cat, cat)
+        # Notify the user
+        try:
+            bot.send_message(
+                inq["user_id"],
+                f"🔔 <b>رد جديد من الإدارة!</b>\n\n"
+                f"📌 <b>التصنيف:</b> {label}\n"
+                f"🆔 <b>رقم الاستفسار:</b> <code>{inquiry_id}</code>\n\n"
+                f"💬 <b>الرد:</b>\n{reply_text}",
+            )
+        except Exception:
+            pass
+        bot.send_message(
+            message.chat.id,
+            f"✅ <b>تم إرسال الرد بنجاح!</b>\n\n"
+            f"📌 <b>التصنيف:</b> {label}\n"
+            f"🆔 <b>رقم الاستفسار:</b> <code>{inquiry_id}</code>",
+            reply_markup=admin_keyboard(),
+        )
+    else:
+        bot.send_message(message.chat.id, "❌ تعذر إرسال الرد.")
+
+
+# ─── عرض الردود للمستخدم ────────────────────────────────────────────────────
+@bot.callback_query_handler(func=lambda call: call.data.startswith("user_replies_"))
+def callback_user_replies(call):
+    cat_key = call.data.replace("user_replies_", "")
+    cat = INQUIRY_CATEGORIES.get(cat_key, cat_key)
+    user_id = call.from_user.id
+    replies = get_replies_for_user(user_id, cat)
+    label = CATEGORY_LABELS.get(cat, cat)
+    if not replies:
+        bot.answer_callback_query(call.id, "✅ لا توجد ردود جديدة.", show_alert=True)
+        return
+    # Show the most recent reply
+    inq = replies[0]
+    text = (
+        f"🔔 <b>رد من الإدارة — {label}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"💬 <b>رسالتك:</b>\n{inq['message']}\n\n"
+        f"📩 <b>رد الإدارة:</b>\n{inq['admin_reply']}\n\n"
+        f"📅 <b>تاريخ الرد:</b> {inq['reply_at']}"
+    )
+    kb_rows = []
+    if len(replies) > 1:
+        kb_rows.append([InlineKeyboardButton(
+            f"➡️ التالية ({len(replies) - 1} متبقية)",
+            callback_data=f"user_replies_next_{cat}",
+        )])
+    kb_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_main")])
+    bot.edit_message_text(
+        text,
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=InlineKeyboardMarkup(kb_rows),
+    )
+    # Mark as read
+    mark_replies_read_for_user(user_id, cat)
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("user_replies_next_"))
+def callback_user_replies_next(call):
+    cat_key = call.data.replace("user_replies_next_", "")
+    cat = INQUIRY_CATEGORIES.get(cat_key, cat_key)
+    # Already marked as read on first view, just show remaining
+    replies = get_replies_for_user(call.from_user.id, cat)
+    if not replies:
+        bot.answer_callback_query(call.id, "✅ لا توجد ردود أخرى.", show_alert=True)
+        return
+    # Re-trigger the view
+    call.data = f"user_replies_{cat_key}"
+    callback_user_replies(call)
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "admin_messages"
