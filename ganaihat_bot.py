@@ -1073,7 +1073,7 @@ def setup_bot_commands():
     bot.set_my_commands([
         BotCommand("start", "تشغيل البوت والعودة للقائمة الرئيسية"),
         BotCommand("admin", "فتح لوحة تحكم المشرف"),
-        BotCommand("help", "المساعدة والتواصل مع الإدارة"),
+        BotCommand("help", "المساعدة"),
     ])
 
 
@@ -6237,12 +6237,6 @@ def cmd_admin(message):
 @bot.message_handler(commands=["help"])
 def cmd_help(message):
     help_markup = InlineKeyboardMarkup()
-    help_markup.add(
-        InlineKeyboardButton(
-            "📩 التواصل مع الإدارة",
-            url=f"tg://user?id={ADMIN_ID}",
-        )
-    )
     if is_account_active(message.from_user.id):
         help_markup.add(
             InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="back_main")
@@ -6261,8 +6255,7 @@ def cmd_help(message):
         "• استخدم /start لفتح القائمة الرئيسية.\n"
         "• استخدم «💳 شراء نقاط» لشحن رصيدك وإرسال إيصال التحويل.\n"
         "• استخدم «🛒 متجر الخدمات» لاستبدال نقاطك بالخدمات.\n"
-        "• استخدم «📋 المهام اليومية» لكسب نقاط إضافية.\n\n"
-        "لأي استفسار أو مشكلة، اضغط زر التواصل مع الإدارة أدناه.",
+        "• استخدم «📋 المهام اليومية» لكسب نقاط إضافية.",
         reply_markup=help_markup,
     )
 
