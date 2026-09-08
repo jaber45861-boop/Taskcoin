@@ -5919,6 +5919,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
         callback_data="admin_list_v2_withdrawals",
     ))
     markup.add(InlineKeyboardButton("📥 الرسائل", callback_data="admin_messages"))
+    markup.add(InlineKeyboardButton("📥 الإدارة", callback_data="admin_management"))
     markup.add(InlineKeyboardButton("🔙 إغلاق اللوحة", callback_data="admin_close"))
     return markup
 
