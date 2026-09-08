@@ -9889,7 +9889,7 @@ ADMIN_CATEGORY_MAP = {
 def callback_admin_open_category(call):
     category = ADMIN_CATEGORY_MAP[call.data]
     label = CATEGORY_LABELS.get(category, category)
-    conn = get_db()
+    conn = get_connection()
     msg = conn.execute(
         "SELECT * FROM user_inquiries WHERE category = ? ORDER BY is_read ASC, created_at ASC LIMIT 1",
         (category,),
@@ -9904,23 +9904,17 @@ def callback_admin_open_category(call):
     if user:
         user_name = user["username"] or user["first_name"] or str(msg["user_id"])
 
-    status_icon = "🆕" if msg["is_read"] == 0 else "➖"
-    admin_reply = ""
-    if msg["admin_reply"]:
-        admin_reply = f"\n\n<b>✉️ رد الإدارة:</b>\n{msg['admin_reply']}"
-
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("↩️ رد", callback_data=f"admin_reply_{msg['id']}")],
         [InlineKeyboardButton("🔙 رجوع", callback_data="admin_management")],
     ])
 
     bot.edit_message_text(
-        f"📥 <b>{label}</b> — الرسائل\n"
+        f"📥 <b>{label}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"{status_icon} <b>#{msg['id']}</b>\n"
         f"👤 <b>المستخدم:</b> {user_name} (<code>{msg['user_id']}</code>)\n"
         f"💬 <b>الرسالة:</b>\n{msg['message']}"
-        f"{admin_reply}\n\n"
+        f"\n\n"
         f"🕐 {msg['created_at']}",
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
