@@ -5699,7 +5699,7 @@ def place_smm_order(service_id: str, link: str, quantity: int) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 # ─── لوحات الأزرار ────────────────────────────────────────────────────────────
 # ══════════════════════════════════════════════════════════════════════════════
-def main_keyboard() -> InlineKeyboardMarkup:
+def main_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
     markup = InlineKeyboardMarkup()
     if TELEGRAM_MINI_APP_URL.startswith("https://"):
         markup.add(InlineKeyboardButton(
@@ -5730,7 +5730,9 @@ def main_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton("📋 المهام اليومية", callback_data="daily_tasks"),
         InlineKeyboardButton("🛒 متجر الخدمات",   callback_data="shop"),
     )
-    markup.add(InlineKeyboardButton("📩 التواصل مع الإدارة", callback_data="contact_admin"))
+    _user_unread = sum(get_unread_reply_counts(user_id).values()) if user_id else 0
+    _user_label = f"📩 التواصل مع الإدارة ({_user_unread})" if _user_unread else "📩 التواصل مع الإدارة"
+    markup.add(InlineKeyboardButton(_user_label, callback_data="contact_admin"))
     markup.add(InlineKeyboardButton("💳 شحن الرصيد", callback_data="buy_points"))
     markup.add(InlineKeyboardButton("سحب الأرباح 💰", callback_data="withdraw_earnings"))
     return markup
@@ -6047,7 +6049,7 @@ def delete_task_admin(task_id, table_name):
         return True
 
 
-def admin_keyboard() -> InlineKeyboardMarkup:
+def admin_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
     markup = InlineKeyboardMarkup()
     markup.row(
         InlineKeyboardButton("📊 إحصائيات البوت",      callback_data="admin_stats"),
@@ -6076,7 +6078,9 @@ def admin_keyboard() -> InlineKeyboardMarkup:
         callback_data="admin_list_v2_withdrawals",
     ))
     markup.add(InlineKeyboardButton("📥 الرسائل", callback_data="admin_messages"))
-    markup.add(InlineKeyboardButton("📥 الإدارة", callback_data="admin_management"))
+    _admin_unread = sum(get_unread_inquiry_counts().values()) if user_id else 0
+    _admin_label = f"📥 الإدارة ({_admin_unread})" if _admin_unread else "📥 الإدارة"
+    markup.add(InlineKeyboardButton(_admin_label, callback_data="admin_management"))
     markup.add(InlineKeyboardButton("🔙 إغلاق اللوحة", callback_data="admin_close"))
     return markup
 
@@ -6388,7 +6392,7 @@ def cmd_admin(message):
         "🔐 <b>لوحة تحكم المشرف</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "مرحباً بك يا مشرف! اختر أحد الخيارات:",
-        reply_markup=admin_keyboard(),
+        reply_markup=admin_keyboard(message.from_user.id),
     )
 
 
@@ -6489,7 +6493,7 @@ def cmd_start(message):
         f"🌟 <b>مرحباً يا {user.first_name}!</b>\n\n"
         "اختر أحد الخيارات أدناه:"
     )
-    bot.send_message(message.chat.id, greeting, reply_markup=main_keyboard())
+    bot.send_message(message.chat.id, greeting, reply_markup=main_keyboard(user.id))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -9864,7 +9868,7 @@ def callback_admin_back(call):
         "مرحباً بك يا مشرف! اختر أحد الخيارات:",
         chat_id=call.message.chat.id,
         message_id=call.message.message_id,
-        reply_markup=admin_keyboard(),
+        reply_markup=admin_keyboard(call.from_user.id),
     )
     bot.answer_callback_query(call.id)
 
@@ -12161,7 +12165,7 @@ def callback_back_main(call):
         "اختر أحد الخيارات أدناه:"
     )
     bot.edit_message_text(greeting, chat_id=call.message.chat.id,
-                          message_id=call.message.message_id, reply_markup=main_keyboard())
+                          message_id=call.message.message_id, reply_markup=main_keyboard(call.from_user.id))
     bot.answer_callback_query(call.id)
 
 
