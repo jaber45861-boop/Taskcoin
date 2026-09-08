@@ -9982,6 +9982,7 @@ def handle_admin_reply(message):
         bot.send_message(message.chat.id, "\u26a0\ufe0f \u0627\u0644\u0631\u062f \u0641\u0627\u0631\u063a. \u0623\u0631\u0633\u0644 \u0646\u0635\u0627 \u0623\u0648 \u0627\u0636\u063a\u0637 /start \u0644\u0644\u0625\u0644\u063a\u0627\u0621.")
         return
     ok = save_admin_reply(inquiry_id, reply_text)
+    mark_inquiry_read(inquiry_id)  # Step 4: explicitly mark the replied message read
     if ok:
         inq = get_inquiry_by_id(inquiry_id)
         label = CATEGORY_LABELS.get(cat, cat)
@@ -9996,7 +9997,9 @@ def handle_admin_reply(message):
             )
         except Exception:
             pass
-        # Go back to same category: show next unread or alert
+        # Re-render the same category page (Step 2/3 layout) so the admin
+        # sees the next unread message; the categories menu will show the
+        # refreshed unread counts on the way back.
         remaining = get_inquiries_by_category(cat, unread_only=True)
         if remaining:
             inq2 = remaining[0]
@@ -10004,23 +10007,25 @@ def handle_admin_reply(message):
             user_name2 = ""
             if user2:
                 user_name2 = user2["username"] or user2["first_name"] or str(inq2["user_id"])
-            text2 = (
-                f"{label}\n"
-                f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
-                f"\U0001f464 <b>\u0627\u0644\u0645\u0633\u062a\u062e\u062f\u0645:</b> {user_name2} (<code>{inq2['user_id']}</code>)\n"
-                f"\U0001f4c5 <b>\u0627\u0644\u062a\u0627\u0631\u064a\u062e:</b> {inq2['created_at']}\n\n"
-                f"\U0001f4ac <b>\u0627\u0644\u0631\u0633\u0627\u0644\u0629:</b>\n{inq2['message']}"
-            )
             kb2 = InlineKeyboardMarkup([
-                [InlineKeyboardButton("\u21a9\ufe0f \u0631\u062f", callback_data=f"admin_reply_{inq2['id']}")],
-                [InlineKeyboardButton("\U0001f519 \u0631\u062c\u0648\u0639", callback_data="admin_management")],
+                [InlineKeyboardButton("↩️ رد", callback_data=f"admin_reply_{inq2['id']}")],
+                [InlineKeyboardButton("🔙 رجوع", callback_data=ADMIN_CATEGORY_CALLBACKS[cat])],
             ])
-            bot.send_message(message.chat.id, text2, reply_markup=kb2)
+            bot.send_message(
+                message.chat.id,
+                f"📥 <b>{label}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"👤 <b>المستخدم:</b> {user_name2} (<code>{inq2['user_id']}</code>)\n"
+                f"💬 <b>الرسالة:</b>\n{inq2['message']}"
+                f"\n\n"
+                f"🕐 {inq2['created_at']}",
+                reply_markup=kb2,
+            )
         else:
             bot.send_message(
                 message.chat.id,
-                f"\u2705 \u062a\u0645 \u0625\u0631\u0633\u0627\u0644 \u0627\u0644\u0631\u062f \u0639\u0644\u0649 #{inquiry_id}\n\n"
-                f"\u2705 \u0644\u0627 \u062a\u0648\u062c\u062f \u0631\u0633\u0627\u0626\u0644 \u063a\u064a\u0631 \u0645\u0642\u0631\u0648\u0621\u0629 \u0641\u064a \u0647\u0630\u0627 \u0627\u0644\u062a\u0635\u0646\u064a\u0641.",
+                f"✅ تم إرسال الرد على #{inquiry_id}\n\n"
+                f"✅ لا توجد رسائل غير مقروءة في هذا التصنيف.",
                 reply_markup=admin_keyboard(user_id),
             )
     else:
