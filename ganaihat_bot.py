@@ -9568,6 +9568,42 @@ def callback_admin_broadcast(call):
     bot.answer_callback_query(call.id)
 
 
+@bot.callback_query_handler(func=lambda call: call.data == "admin_management"
+                             and is_admin(call.from_user.id))
+def callback_admin_management(call):
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💸 السحب", callback_data="admin_mg_withdrawals")],
+        [InlineKeyboardButton("💰 الشحن", callback_data="admin_mg_topup")],
+        [InlineKeyboardButton("🛒 الأوردرات", callback_data="admin_mg_orders")],
+        [InlineKeyboardButton("📋 المهام", callback_data="admin_mg_tasks")],
+        [InlineKeyboardButton("💬 استفسار عام", callback_data="admin_mg_general_inquiry")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="admin_back")],
+    ])
+    bot.edit_message_text(
+        "📥 <b>لوحة الإدارة</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "اختر القسم:",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=kb,
+    )
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_back"
+                             and is_admin(call.from_user.id))
+def callback_admin_back(call):
+    bot.edit_message_text(
+        "🔐 <b>لوحة تحكم المشرف</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "مرحباً بك يا مشرف! اختر أحد الخيارات:",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=admin_keyboard(),
+    )
+    bot.answer_callback_query(call.id)
+
+
 @bot.callback_query_handler(func=lambda call: call.data == "admin_messages"
                              and is_admin(call.from_user.id))
 def callback_admin_messages(call):
