@@ -9896,7 +9896,7 @@ def callback_admin_category_view(call):
     user = get_user(inq["user_id"])
     user_name = ""
     if user:
-        user_name = user.get("username") or user.get("first_name") or str(inq["user_id"])
+        user_name = user["username"] or user["first_name"] or str(inq["user_id"])
     status = "\U0001f4e2 جديد" if not inq["is_read"] else "\U0001f4ac " + ("\u2709\ufe0f رد:" + inq["admin_reply"][:50] if inq.get("admin_reply") else "\u2796 \u0645\u0642\u0631\u0648\u0621")
     text = (
         f"{label}\n"
@@ -9957,7 +9957,7 @@ def callback_admin_reply_start(call):
     user = get_user(inq["user_id"])
     user_name = ""
     if user:
-        user_name = user.get("username") or user.get("first_name") or str(inq["user_id"])
+        user_name = user["username"] or user["first_name"] or str(inq["user_id"])
     bot.edit_message_text(
         f"✉️ <b>رد على استفسار #{inquiry_id}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
