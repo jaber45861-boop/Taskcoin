@@ -2357,9 +2357,93 @@ def init_db():
                 processed_at       DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # ─── جدول استفسارات المستخدمين ──────────────────────────────────────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_inquiries (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id     INTEGER NOT NULL,
+                category    TEXT    NOT NULL,
+                message     TEXT    NOT NULL,
+                is_read     INTEGER NOT NULL DEFAULT 0,
+                created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         conn.commit()
     refresh_promotion_packages()
     refresh_required_channels()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ─── استفسارات المستخدمين ─────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+
+INQUIRY_CATEGORIES = {
+    "contact_admin_withdrawals": "withdrawals",
+    "contact_admin_topup": "topup",
+    "contact_admin_orders": "orders",
+    "contact_admin_tasks": "tasks",
+    "contact_admin_general": "general",
+}
+
+CATEGORY_LABELS = {
+    "withdrawals": "💸 السحب",
+    "topup": "💰 الشحن",
+    "orders": "🛒 الأوردرات",
+    "tasks": "📋 المهام",
+    "general": "💬 استفسار عام",
+}
+
+ADMIN_CATEGORY_CALLBACKS = {
+    "withdrawals": "admin_mg_withdrawals",
+    "topup": "admin_mg_topup",
+    "orders": "admin_mg_orders",
+    "tasks": "admin_mg_tasks",
+    "general": "admin_mg_general_inquiry",
+}
+
+
+def save_user_inquiry(user_id: int, category: str, message: str) -> int:
+    """Save a user inquiry and return the inquiry ID."""
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "INSERT INTO user_inquiries (user_id, category, message) VALUES (?, ?, ?)",
+            (user_id, category, message),
+        )
+        conn.commit()
+        return cursor.lastrowid
+
+
+def get_unread_inquiry_counts() -> dict[str, int]:
+    """Return {category: unread_count} for admin panel display."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT category, COUNT(*) as cnt FROM user_inquiries "
+            "WHERE is_read = 0 GROUP BY category"
+        ).fetchall()
+    return {row["category"]: row["cnt"] for row in rows}
+
+
+def get_inquiries_by_category(category: str, unread_only: bool = False) -> list[dict]:
+    """Fetch inquiries for a category."""
+    with get_connection() as conn:
+        query = "SELECT * FROM user_inquiries WHERE category = ?"
+        params = [category]
+        if unread_only:
+            query += " AND is_read = 0"
+        query += " ORDER BY created_at DESC"
+        rows = conn.execute(query, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_inquiries_read(category: str) -> None:
+    """Mark all inquiries in a category as read."""
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE user_inquiries SET is_read = 1 WHERE category = ? AND is_read = 0",
+            (category,),
+        )
+        conn.commit()
 
 
 def normalize_channel_input(value: str) -> str | None:
@@ -9587,15 +9671,66 @@ def callback_contact_admin(call):
         reply_markup=kb,
     )
     bot.answer_callback_query(call.id)
-@bot.callback_query_handler(func=lambda call: call.data == "admin_management"
+# ─── تصنيفات التواصل مع الإدارة (المستخدم) ─────────────────────────────────
+@bot.callback_query_handler(func=lambda call: call.data in INQUIRY_CATEGORIES)
+def callback_user_inquiry_category(call):
+    cat = INQUIRY_CATEGORIES.get(call.data)
+    if not cat:
+        bot.answer_callback_query(call.id, "⚠️ تصنيف غير معروف.", show_alert=True)
+        return
+    user_state[call.from_user.id] = {"step": "awaiting_inquiry_message", "category": cat}
+    label = CATEGORY_LABELS.get(cat, cat)
+    bot.edit_message_text(
+        f"💬 <b>{label}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"اكتب رسالتك هنا:",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ إلغاء", callback_data="back_main"),
+        ]]),
+    )
+    bot.answer_callback_query(call.id)
+
+
+@bot.message_handler(
+    func=lambda m: m.from_user.id in user_state
+    and user_state[m.from_user.id].get("step") == "awaiting_inquiry_message"
+)
+def handle_inquiry_message(message):
+    user_id = message.from_user.id
+    state = user_state.pop(user_id, {})
+    cat = state.get("category")
+    text = (message.text or "").strip()
+    if not text:
+        bot.send_message(message.chat.id, "⚠️ الرسالة فارغة. أرسل نصاً أو اضغط /start للإلغاء.")
+        return
+    inquiry_id = save_user_inquiry(user_id, cat, text)
+    label = CATEGORY_LABELS.get(cat, cat)
+    bot.send_message(
+        message.chat.id,
+        f"✅ <b>تم إرسال رسالتك بنجاح!</b>\n\n"
+        f"📌 <b>التصنيف:</b> {label}\n"
+        f"🆔 <b>رقم الاستفسار:</b> <code>{inquiry_id}</code>\n\n"
+        f"سيتم الرد عليك من الإدارة في أقرب وقت.",
+        reply_markup=main_keyboard(),
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_management"@bot.callback_query_handler(func=lambda call: call.data == "admin_management"
+                             and is_admin(call.from_user.id))
                              and is_admin(call.from_user.id))
 def callback_admin_management(call):
+    counts = get_unread_inquiry_counts()
+    def _label(cat_key, emoji, text):
+        n = counts.get(cat_key, 0)
+        return f"{emoji} {text} ({n})" if n else f"{emoji} {text}"
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💸 السحب", callback_data="admin_mg_withdrawals")],
-        [InlineKeyboardButton("💰 الشحن", callback_data="admin_mg_topup")],
-        [InlineKeyboardButton("🛒 الأوردرات", callback_data="admin_mg_orders")],
-        [InlineKeyboardButton("📋 المهام", callback_data="admin_mg_tasks")],
-        [InlineKeyboardButton("💬 استفسار عام", callback_data="admin_mg_general_inquiry")],
+        [InlineKeyboardButton(_label("withdrawals", "💸", "السحب"), callback_data="admin_mg_withdrawals")],
+        [InlineKeyboardButton(_label("topup", "💰", "الشحن"), callback_data="admin_mg_topup")],
+        [InlineKeyboardButton(_label("orders", "🛒", "الأوردرات"), callback_data="admin_mg_orders")],
+        [InlineKeyboardButton(_label("tasks", "📋", "المهام"), callback_data="admin_mg_tasks")],
+        [InlineKeyboardButton(_label("general", "💬", "استفسار عام"), callback_data="admin_mg_general_inquiry")],
         [InlineKeyboardButton("🔙 رجوع", callback_data="admin_back")],
     ])
     bot.edit_message_text(
@@ -9607,7 +9742,6 @@ def callback_admin_management(call):
         reply_markup=kb,
     )
     bot.answer_callback_query(call.id)
-
 
 @bot.callback_query_handler(func=lambda call: call.data == "admin_back"
                              and is_admin(call.from_user.id))
@@ -9621,6 +9755,68 @@ def callback_admin_back(call):
         reply_markup=admin_keyboard(),
     )
     bot.answer_callback_query(call.id)
+
+
+# ─── تصنيفات الإدارة (عرض رسائل المستخدمين) ───────────────────────────────
+ADMIN_CATEGORY_MAP = {
+    "admin_mg_withdrawals": "withdrawals",
+    "admin_mg_topup": "topup",
+    "admin_mg_orders": "orders",
+    "admin_mg_tasks": "tasks",
+    "admin_mg_general_inquiry": "general",
+}
+
+
+@bot.callback_query_handler(func=lambda call: call.data in ADMIN_CATEGORY_MAP
+                             and is_admin(call.from_user.id))
+def callback_admin_category_view(call):
+    cat = ADMIN_CATEGORY_MAP.get(call.data)
+    if not cat:
+        bot.answer_callback_query(call.id, "⚠️ تصنيف غير معروف.", show_alert=True)
+        return
+    inquiries = get_inquiries_by_category(cat, unread_only=True)
+    label = CATEGORY_LABELS.get(cat, cat)
+    if not inquiries:
+        bot.answer_callback_query(call.id, "✅ لا توجد رسائل غير مقروءة.", show_alert=True)
+        return
+    # Show the most recent unread inquiry
+    inq = inquiries[0]
+    user = get_user(inq["user_id"])
+    user_name = ""
+    if user:
+        user_name = user.get("username") or user.get("first_name") or str(inq["user_id"])
+    text = (
+        f"{label}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 <b>المستخدم:</b> {user_name} (<code>{inq['user_id']}</code>)\n"
+        f"📅 <b>التاريخ:</b> {inq['created_at']}\n"
+        f"🆔 <b>رقم:</b> <code>{inq['id']}</code>\n\n"
+        f"💬 <b>الرسالة:</b>\n{inq['message']}"
+    )
+    kb_rows = []
+    # Navigation between unread messages
+    if len(inquiries) > 1:
+        kb_rows.append([InlineKeyboardButton(
+            f"➡️ التالية ({len(inquiries) - 1} متبقية)",
+            callback_data=f"admin_inq_next_{cat}",
+        )])
+    kb_rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin_management")])
+    bot.edit_message_text(
+        text,
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=InlineKeyboardMarkup(kb_rows),
+    )
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_inq_next_")
+                             and is_admin(call.from_user.id))
+def callback_admin_inq_next(call):
+    cat = call.data.replace("admin_inq_next_", "")
+    mark_inquiries_read(cat)
+    # Re-fetch to show next unread
+    callback_admin_category_view(call)
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "admin_messages"
