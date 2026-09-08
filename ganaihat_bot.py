@@ -55,6 +55,7 @@ import logging
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from telebot.types import BotCommand, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+from telebot.apihelper import ApiTelegramException
 from urllib.parse import parse_qs, urlsplit
 import time
 import uuid
@@ -9906,20 +9907,29 @@ def callback_admin_open_category(call):
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("↩️ رد", callback_data=f"admin_reply_{msg['id']}")],
-        [InlineKeyboardButton("🔙 رجوع", callback_data="admin_management")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data=ADMIN_CATEGORY_CALLBACKS[category])],
     ])
 
-    bot.edit_message_text(
-        f"📥 <b>{label}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"👤 <b>المستخدم:</b> {user_name} (<code>{msg['user_id']}</code>)\n"
-        f"💬 <b>الرسالة:</b>\n{msg['message']}"
-        f"\n\n"
-        f"🕐 {msg['created_at']}",
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        reply_markup=kb,
-    )
+    try:
+        bot.edit_message_text(
+            f"📥 <b>{label}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 <b>المستخدم:</b> {user_name} (<code>{msg['user_id']}</code>)\n"
+            f"💬 <b>الرسالة:</b>\n{msg['message']}"
+            f"\n\n"
+            f"🕐 {msg['created_at']}",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=kb,
+        )
+    except ApiTelegramException as exc:
+        # Re-opening an unchanged page (e.g. 🔙 رجوع back into the same
+        # category) makes Telegram reject the identical edit with
+        # "message is not modified" — treat it as success.
+        if "message is not modified" in (getattr(exc, "description", "") or str(exc)):
+            pass
+        else:
+            raise
     bot.answer_callback_query(call.id)
 
 
