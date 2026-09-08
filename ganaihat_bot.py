@@ -9571,18 +9571,22 @@ def callback_admin_broadcast(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == "contact_admin")
 def callback_contact_admin(call):
-    bot.answer_callback_query(call.id)
-    bot.send_message(
-        call.message.chat.id,
-        f"📩 <b>تواصل مع الإدارة</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"اضضغط على الزر أدناه للتحدث مع المشرف مباشرة:",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("📩 إرسال رسالة", url=f"tg://user?id={ADMIN_ID}"),
-        ]]),
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💸 السحب", callback_data="contact_admin_withdrawals")],
+        [InlineKeyboardButton("💰 الشحن", callback_data="contact_admin_topup")],
+        [InlineKeyboardButton("🛒 الأوردرات", callback_data="contact_admin_orders")],
+        [InlineKeyboardButton("📋 المهام", callback_data="contact_admin_tasks")],
+        [InlineKeyboardButton("💬 استفسار عام", callback_data="contact_admin_general")],
+    ])
+    bot.edit_message_text(
+        "💬 <b>إيه الموضوع اللي عايز تتواصل بخصوصه؟</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "اختر التصنيف:",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=kb,
     )
-
-
+    bot.answer_callback_query(call.id)
 @bot.callback_query_handler(func=lambda call: call.data == "admin_management"
                              and is_admin(call.from_user.id))
 def callback_admin_management(call):
