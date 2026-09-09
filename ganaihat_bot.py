@@ -10179,13 +10179,17 @@ def callback_admin_messages(call):
 @bot.callback_query_handler(func=lambda call: call.data == "admin_close"
                              and is_admin(call.from_user.id))
 def callback_admin_close(call):
-    user_state.pop(call.from_user.id, None)
-    bot.edit_message_text(
-        "🔐 <i>تم إغلاق لوحة التحكم.</i>",
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
+    user_id = call.from_user.id
+    user_state.pop(user_id, None)
+    user     = call.from_user
+    greeting = (
+        f"🌟 <b>مرحباً يا {user.first_name}!</b>\n\n"
+        "اختر أحد الخيارات أدناه:"
     )
-    bot.answer_callback_query(call.id, "تم إغلاق اللوحة.")
+    bot.edit_message_text(greeting, chat_id=call.message.chat.id,
+                          message_id=call.message.message_id,
+                          reply_markup=main_keyboard(user_id))
+    bot.answer_callback_query(call.id)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
