@@ -6519,11 +6519,71 @@ def callback_anti_bot(call):
     if success:
         mark_user_verified(user_id)
         bot.answer_callback_query(call.id, "✅ تحقّقت بنجاح!", show_alert=True)
-        # عرض القائمة الرئيسية فقط إذا كان الحساب مفعّلاً
-        if not account_access_allowed(user_id):
+        # لا بوابة قبليّة هنا: بعد نجاح التحقق ينتقل المستخدم مباشرة إلى
+        # flow الاشتراك الإلزامي/التفعيل، بفحص العضوية الفعلية في كل القنوات أولاً.
+        channels = get_channels_status(user_id)
+        enforce_channel_subscriptions(user_id, channels)
+        channels = get_channels_status(user_id)
+        not_subbed = [ch for ch in channels if not ch["subscribed"]]
+        _, pending_tasks = get_activation_requirements(user_id)
+
+        if not_subbed or pending_tasks:
+            # شروط ناقصة: يبقى على شاشة الاشتراك/التفعيل.
             show_activation_gate(call.message.chat.id, user_id, call.message.message_id)
             return
-        current_user = get_user(user_id)
+
+        was_active = is_account_active(user_id)
+
+        if was_active:
+            # حساب مفعّل بالفعل (أو مشترك سابقاً في كل القنوات): افتح القائمة مباشرة.
+            greeting = (
+                f"👋 <b>أهلاً وسهلاً يا {call.from_user.first_name}!</b>\n\n"
+                "يسعدنا انضمامك إلينا. تم تسجيل حسابك بنجاح ✅\n\n"
+                "اختر أحد الخيارات أدناه للبدء:"
+            )
+            bot.edit_message_text(
+                greeting,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=main_keyboard(),
+            )
+            return
+
+        # تمييز الحساب المجمّد بعقوبة مغادرة عن التفعيل الأول.
+        was_penalized = False
+        with get_connection() as conn:
+            was_penalized = conn.execute(
+                "SELECT 1 FROM channel_reward_ledger "
+                "WHERE user_id = ? AND status = 'deducted' LIMIT 1",
+                (user_id,),
+            ).fetchone() is not None
+
+        if was_penalized:
+            reactivated = reactivate_after_penalty(user_id)
+            if not reactivated:
+                show_activation_gate(call.message.chat.id, user_id, call.message.message_id)
+                return
+            channels_refreshed = get_channels_status(user_id)
+            restore_channel_rewards(user_id, channels_refreshed)
+            greeting = (
+                f"👋 <b>أهلاً وسهلاً يا {call.from_user.first_name}!</b>\n\n"
+                "يسعدنا انضمامك إلينا. تم تسجيل حسابك بنجاح ✅\n\n"
+                "اختر أحد الخيارات أدناه للبدء:"
+            )
+            bot.edit_message_text(
+                greeting,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=main_keyboard(),
+            )
+            return
+
+        # ─── أول تفعيل للحساب ────────────────────────────────────────────────
+        activated = activate_user(user_id)
+        if not activated:
+            show_activation_gate(call.message.chat.id, user_id, call.message.message_id)
+            return
+        bot.answer_callback_query(call.id, "🎉 تم تفعيل حسابك بنجاح!", show_alert=True)
         greeting = (
             f"👋 <b>أهلاً وسهلاً يا {call.from_user.first_name}!</b>\n\n"
             "يسعدنا انضمامك إلينا. تم تسجيل حسابك بنجاح ✅\n\n"
@@ -6571,15 +6631,6 @@ def callback_anti_bot(call):
             reply_markup=build_verification_keyboard(options),
         )
 
-    greeting = (
-        f"👋 <b>أهلاً وسهلاً يا {user.first_name}!</b>\n\n"
-        "يسعدنا انضمامك إلينا. تم تسجيل حسابك بنجاح ✅\n\n"
-        "اختر أحد الخيارات أدناه للبدء:"
-        if is_new else
-        f"🌟 <b>مرحباً مجدداً يا {user.first_name}!</b>\n\n"
-        "اختر أحد الخيارات أدناه:"
-    )
-    bot.send_message(message.chat.id, greeting, reply_markup=main_keyboard())
 
 
 # ══════════════════════════════════════════════════════════════════════════════
