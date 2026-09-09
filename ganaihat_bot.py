@@ -5716,7 +5716,7 @@ def main_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
         callback_data="promote_channel",
     ))
     markup.add(InlineKeyboardButton(
-        "🎯 إنشاء مهمة إعلانية",
+        "🎯 إنشاء مهمة",
         callback_data="create_ad_task",
     ))
     markup.add(InlineKeyboardButton(
@@ -11821,6 +11821,9 @@ def callback_my_orders(call):
     bot.edit_message_text(text, chat_id=call.message.chat.id,
                           message_id=call.message.message_id, reply_markup=back_markup)
     bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "create_ad_task")
 def callback_create_ad_task(call):
     """Entry point for the advertiser task creation flow."""
     user_id = call.from_user.id
