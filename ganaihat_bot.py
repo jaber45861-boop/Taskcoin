@@ -6519,7 +6519,10 @@ def callback_anti_bot(call):
     if success:
         mark_user_verified(user_id)
         bot.answer_callback_query(call.id, "✅ تحقّقت بنجاح!", show_alert=True)
-        # عرض القائمة الرئيسية
+        # عرض القائمة الرئيسية فقط إذا كان الحساب مفعّلاً
+        if not account_access_allowed(user_id):
+            show_activation_gate(call.message.chat.id, user_id, call.message.message_id)
+            return
         current_user = get_user(user_id)
         greeting = (
             f"👋 <b>أهلاً وسهلاً يا {call.from_user.first_name}!</b>\n\n"
