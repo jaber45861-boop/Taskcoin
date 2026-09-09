@@ -11372,8 +11372,6 @@ def callback_confirm_manual(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == "verify_activation")
 def callback_verify_activation(call):
-    if not require_active_account(call):
-        return
     user_id = call.from_user.id
     if get_user(user_id) is None:
         bot.answer_callback_query(
@@ -11381,6 +11379,7 @@ def callback_verify_activation(call):
         )
         return
 
+    # فحص العضوية الفعلية في كل القنوات أولاً (قبل أي حديث عن التفعيل).
     channels     = get_channels_status(user_id)
     enforce_channel_subscriptions(user_id, channels)
     channels     = get_channels_status(user_id)
@@ -11399,9 +11398,31 @@ def callback_verify_activation(call):
         show_activation_gate(call.message.chat.id, user_id, call.message.message_id)
         return
 
-    was_frozen = not is_account_active(user_id)
+    was_active = is_account_active(user_id)
 
-    if was_frozen:
+    if was_active:
+        bot.answer_callback_query(call.id, "✅ تم التحقق من شروط حسابك.")
+        updated = get_user(user_id)
+        bot.edit_message_text(
+            "✅ <b>تم التحقق من شروط حسابك بنجاح!</b>\n\n"
+            + f"🏆 رصيدك الحالي: <b>{balance_text(updated)}</b>\n\n"
+            + "أصبحت جميع ميزات البوت متاحة لك الآن.",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=main_keyboard(),
+        )
+        return
+
+    # تمييز الحساب المجمّد بعقوبة مغادرة عن التفعيل الأول.
+    was_penalized = False
+    with get_connection() as conn:
+        was_penalized = conn.execute(
+            "SELECT 1 FROM channel_reward_ledger "
+            "WHERE user_id = ? AND status = 'deducted' LIMIT 1",
+            (user_id,),
+        ).fetchone() is not None
+
+    if was_penalized:
         # ─── فك تجميد حساب عوقب بسبب مغادرة قناة ───────────────────────────
         reactivated = reactivate_after_penalty(user_id)
         if not reactivated:
@@ -11429,27 +11450,21 @@ def callback_verify_activation(call):
         return
 
     # ─── أول تفعيل للحساب ────────────────────────────────────────────────────
-    already_active = is_account_active(user_id)
-    activated      = activate_user(user_id) if not already_active else False
-    updated        = get_user(user_id)
+    activated = activate_user(user_id)
+    updated   = get_user(user_id)
 
-    if not activated and not already_active:
+    if not activated:
         bot.answer_callback_query(
             call.id, "⚠️ تعذر تفعيل الحساب حالياً.", show_alert=True
         )
         show_activation_gate(call.message.chat.id, user_id, call.message.message_id)
         return
 
-    if already_active:
-        bot.answer_callback_query(call.id, "✅ تم التحقق من شروط حسابك.")
-    else:
-        bot.answer_callback_query(call.id, "🎉 تم تفعيل حسابك بنجاح!", show_alert=True)
+    bot.answer_callback_query(call.id, "🎉 تم تفعيل حسابك بنجاح!", show_alert=True)
 
     activation_text = (
         "🎉 <b>تم تفعيل حسابك بنجاح!</b>\n\n"
         f"🎁 تمت إضافة <b>{format_balance(ACTIVATION_REWARD_USD_NANO)}</b> كمكافأة تفعيل إضافية.\n"
-        if activated else
-        "✅ <b>تم التحقق من شروط حسابك بنجاح!</b>\n\n"
     )
     bot.edit_message_text(
         activation_text
@@ -11461,9 +11476,6 @@ def callback_verify_activation(call):
     )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ─── Callback: متجر الخدمات ───────────────────────────────────────────────────
-# ══════════════════════════════════════════════════════════════════════════════
 @bot.callback_query_handler(func=lambda call: call.data == "shop")
 def callback_shop(call):
     user_id = call.from_user.id
