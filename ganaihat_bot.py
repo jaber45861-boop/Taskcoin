@@ -10585,9 +10585,13 @@ def callback_daily_tasks(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("check_channel_"))
 def callback_check_channel(call):
-    """يتحقق من اشتراك المستخدم في قناة محددة ويمنحه مكافأتها فوراً."""
-    if not require_active_account(call):
-        return
+    """يفحص العضوية الفعلية في جميع القنوات الإلزامية مباشرة ثم يفتح الحساب.
+
+    يعمل قبل التفعيل (لا يشترط حساباً نشطاً)، ويجري الفحص عبر Telegram API
+    سواء كان المستخدم مشتركاً من قبل أو اشترك الآن، ثم:
+    - إن اكتملت جميع القنوات: يُفعّل الحساب / يفك التجميد ويعرض القائمة الرئيسية.
+    - إن بقيت قنوات ناقصة: يمنح مكافأة القناة المؤكدة ويبقيه على شاشة الاشتراك.
+    """
     user_id  = call.from_user.id
     task_key = call.data[len("check_channel_"):]
 
@@ -10603,61 +10607,112 @@ def callback_check_channel(call):
         bot.answer_callback_query(call.id, "⚠️ القناة غير موجودة.", show_alert=True)
         return
 
-    if is_task_done(user_id, task_key):
-        bot.answer_callback_query(
-            call.id, "✅ لقد استلمتَ مكافأة هذه القناة مسبقاً!", show_alert=True
-        )
-        return
+    # فحص الاشتراك الفعلي في جميع القنوات الإلزامية مباشرة (بغضّ النظر عن
+    # حالة التفعيل أو المكافآت السابقة) حتى يستفيد من الضغطة كل الشروط.
+    channels = get_channels_status(user_id)
+    not_subbed = [ch for ch in channels if not ch["subscribed"]]
+    if not_subbed:
+        # القناة المستهدفة نفسها غير مستوفاة بعد؟ اعرض تنبيهاً وابقِ الشاشة.
+        if any(ch["task_key"] == task_key for ch in not_subbed):
+            bot.answer_callback_query(
+                call.id,
+                f"❌ لم تشترك في {channel['name']} بعد!\nاشترك أولاً ثم اضغط التحقق.",
+                show_alert=True,
+            )
+            return
 
-    if not is_subscribed(user_id, channel["username"]):
+        # القناة المستهدفة مؤكدة لكن بقيت قنوات أخرى ناقصة:
+        # امنح مكافأة القناة المؤكدة ثم ابقِ المستخدم على شاشة الاشتراك.
+        grant_channel_reward(user_id, channel)
         bot.answer_callback_query(
             call.id,
-            f"❌ لم تشترك في {channel['name']} بعد!\nاشترك أولاً ثم اضغط التحقق.",
+            "✅ تم تأكيد الاشتراك!\n" + "\n".join(f"• {ch['name']}" for ch in not_subbed[:4])
+            + "\nأكمل بقية القنوات ثم اضغط «تحقق من إتمام كافة الشروط».",
             show_alert=True,
         )
+        try:
+            show_activation_gate(
+                call.message.chat.id, user_id, call.message.message_id
+            )
+        except Exception:
+            pass
         return
 
-    # الاشتراك مؤكد — منح المكافأة فوراً، أو استرداد خصم سابق عند العودة.
+    # جميع القنوات الإلزامية مستوفاة — افتح الحساب مباشرة
+    # (نفس مسار زر «تحقق من إتمام كافة الشروط»: فك تجميد + استرداد الخصومات).
+    was_active = is_account_active(user_id)
+    if not was_active:
+        reactivated = reactivate_after_penalty(user_id)
+        if not reactivated:
+            bot.answer_callback_query(
+                call.id, "⚠️ لم تكتمل جميع الشروط بعد.", show_alert=True
+            )
+            try:
+                show_activation_gate(
+                    call.message.chat.id, user_id, call.message.message_id
+                )
+            except Exception:
+                pass
+            return
+        # استرداد أي خصومات قنوات سابقة بعد عودة المستخدم للاشتراك في الجميع.
+        try:
+            restore_channel_rewards(user_id)
+        except Exception:
+            pass
+        # منح أي مكافآت قنوات مؤكدة ولم تُصرف بعد.
+        try:
+            sync_channel_rewards(user_id)
+        except Exception:
+            pass
+        updated = get_user(user_id)
+        bot.answer_callback_query(
+            call.id, "✅ جميع القنوات مستوفاة — تم فتح الحساب!", show_alert=True
+        )
+        try:
+            bot.edit_message_text(
+                f"🎉 <b>تم فتح حسابك بنجاح!</b>\n\n"
+                f"✅ اكتمل الاشتراك في جميع القنوات الإلزامية.\n"
+                f"🏆 <b>رصيدك الحالي:</b> {balance_text(updated)}\n\n"
+                "أصبحت جميع ميزات البوت متاحة لك الآن.",
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=main_keyboard(user_id),
+            )
+        except Exception:
+            pass
+        return
+
+    # مستخدم نشط بالفعل: أكد مكافأة القناة وحدّث شاشة المهام فقط.
     reward_result = grant_channel_reward(user_id, channel)
+    updated = get_user(user_id)
     if reward_result is None:
         bot.answer_callback_query(
             call.id, "✅ لقد استلمتَ مكافأة هذه القناة مسبقاً!", show_alert=True
         )
-        return
-    reward_kind = reward_result["kind"]
-    reward_points = reward_result["points"]
-    updated = get_user(user_id)
-    bot.answer_callback_query(
-        call.id,
-        (
-            f"🎉 تم التحقق! حصلتَ على {format_balance(reward_points)}."
-            if reward_kind == "granted"
-            else f"🔁 تم استرداد {format_balance(reward_points)} بعد عودتك للقناة."
-        ),
-        show_alert=True,
-    )
-
-    # تحديث الشاشة الحالية (مهام يومية أو بوابة التفعيل)
+    else:
+        bot.answer_callback_query(
+            call.id,
+            f"🎉 تم التحقق! حصلتَ على {format_balance(reward_result['points'])}.",
+            show_alert=True,
+        )
+        try:
+            bot.send_message(
+                call.message.chat.id,
+                f"✅ <b>مكافأة القناة!</b>\n\n"
+                f"تم التحقق من اشتراكك في <b>{html.escape(channel['name'])}</b> بنجاح.\n"
+                f"💰 تم إضافة <b>{format_balance(reward_result['points'])}</b> إلى رصيدك.\n\n"
+                f"🏆 <b>رصيدك الحالي:</b> {balance_text(updated)}",
+            )
+        except Exception:
+            pass
     try:
-        if is_account_active(user_id):
-            text, markup = build_tasks_text(user_id)
-        else:
-            text   = build_activation_gate_text(user_id)
-            markup = activation_gate_keyboard(user_id)
+        text, markup = build_tasks_text(user_id)
         bot.edit_message_text(
             text, chat_id=call.message.chat.id,
             message_id=call.message.message_id, reply_markup=markup,
         )
     except Exception:
         pass
-
-    bot.send_message(
-        call.message.chat.id,
-        f"✅ <b>{'مكافأة القناة' if reward_kind == 'granted' else 'استرداد مكافأة القناة'}!</b>\n\n"
-        f"تم التحقق من اشتراكك في <b>{html.escape(channel['name'])}</b> بنجاح.\n"
-        f"💰 تم إضافة <b>{format_balance(reward_points)}</b> إلى رصيدك.\n\n"
-        f"🏆 <b>رصيدك الحالي:</b> {balance_text(updated)}",
-    )
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("claim_referral_"))
