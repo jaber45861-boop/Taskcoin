@@ -274,6 +274,17 @@ body {
   text-align: start;
 }
 
+/* Balanced two-tone gradient on quick action labels
+   (guarded so unsupported clients keep solid text). */
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .quick__label {
+    background: linear-gradient(180deg, var(--text) 20%, var(--text-muted) 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+}
+
 /* ── Activity list ──────────────────────────────────────── */
 
 .card {
@@ -388,11 +399,13 @@ body {
   content: "";
   position: absolute;
   top: 5px;
-  width: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 24px;
   height: 3px;
   border-radius: 999px;
   background: transparent;
-  transition: background-color 150ms ease;
+  transition: background-color 150ms ease, box-shadow 150ms ease;
 }
 
 .bottom-nav__icon {
@@ -409,7 +422,10 @@ body {
 .bottom-nav__item:active .bottom-nav__icon { transform: scale(0.88); }
 
 .bottom-nav__item.is-active { color: var(--accent); }
-.bottom-nav__item.is-active::before { background: var(--accent); }
+.bottom-nav__item.is-active::before {
+  background: var(--accent);
+  box-shadow: 0 0 8px 1px rgba(240, 185, 11, 0.5);
+}
 .bottom-nav__item.is-active .bottom-nav__label { font-weight: 700; }
 
 /* ── Interaction states: active + keyboard focus ────────── */
