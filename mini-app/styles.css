@@ -1,6 +1,6 @@
-/* Taskcoin Mini App — shell styles
+/* Taskcoin Mini App — Dashboard styles
    Colors default to a Telegram-dark palette and are overridden at runtime
-   from Telegram.WebApp.themeParams (see app.js). */
+   from Telegram.WebApp.themeParams (see app.js). Static demo data only. */
 
 :root {
   --bg: #0e1621;
@@ -11,7 +11,9 @@
   --text-muted: #8fa3b5;
   --accent: #f0b90b;
   --accent-text: #10161d;
+  --positive: #2ecc71;
   --radius: 16px;
+  --nav-height: 62px;
 }
 
 * { box-sizing: border-box; }
@@ -30,57 +32,58 @@ body {
   font-size: 15px;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
 }
 
-.shell {
+.app {
   max-width: 480px;
   margin: 0 auto;
-  padding: 16px 16px 32px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+  padding: 14px 16px calc(var(--nav-height) + 24px);
+}
+
+/* ── Views / tabs ───────────────────────────────────────── */
+
+.view { display: none; animation: view-in 160ms ease-out; }
+.view.is-active { display: block; }
+
+@keyframes view-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
 }
 
 /* ── Header ─────────────────────────────────────────────── */
 
-.shell__header {
+.header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 2px 2px;
+  padding: 4px 2px 12px;
 }
 
-.shell__brand {
+.header__brand {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
-.shell__logo {
+.header__logo {
   display: grid;
   place-items: center;
-  width: 44px;
-  height: 44px;
-  font-size: 24px;
+  width: 40px;
+  height: 40px;
+  font-size: 21px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
 }
 
-.shell__title {
-  margin: 0;
-  font-size: 18px;
+.header__name {
+  font-size: 17px;
   font-weight: 800;
   letter-spacing: 0.2px;
 }
 
-.shell__subtitle {
-  margin: 0;
-  font-size: 12.5px;
-  color: var(--text-muted);
-}
-
-.shell__connection {
+.header__badge {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -92,82 +95,261 @@ body {
   border-radius: 999px;
 }
 
-.shell__connection-dot {
+.header__badge-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #2ecc71;
+  background: var(--positive);
 }
 
-/* ── Cards ──────────────────────────────────────────────── */
+/* ── Balance card ───────────────────────────────────────── */
+
+.balance {
+  position: relative;
+  overflow: hidden;
+  padding: 18px;
+  background:
+    radial-gradient(120% 140% at 85% 0%, rgba(240, 185, 11, 0.14), transparent 55%),
+    var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.balance::after {
+  content: "🪙";
+  position: absolute;
+  inset-inline-end: -14px;
+  bottom: -22px;
+  font-size: 96px;
+  opacity: 0.07;
+  pointer-events: none;
+}
+
+.balance__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.balance__caption {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.balance__chip {
+  font-size: 11.5px;
+  color: var(--positive);
+  background: rgba(46, 204, 113, 0.12);
+  border-radius: 999px;
+  padding: 3px 9px;
+}
+
+.balance__amount {
+  margin-top: 4px;
+  font-size: 34px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+  font-variant-numeric: tabular-nums;
+}
+
+.balance__amount small {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-inline-start: 6px;
+}
+
+.balance__meta {
+  margin-top: 2px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.balance__sep { margin: 0 6px; }
+
+/* ── Sections ───────────────────────────────────────────── */
+
+.section { margin-top: 20px; }
+
+.section__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.section__title {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.section__head .section__title { margin-bottom: 0; }
+
+.section__hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ── Quick actions ──────────────────────────────────────── */
+
+.quick {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+
+.quick__item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  padding: 13px 6px 11px;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease;
+}
+
+.quick__item:active { transform: scale(0.96); }
+
+.quick__icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  font-size: 19px;
+  background: var(--surface-muted);
+  border-radius: 11px;
+}
+
+.quick__label {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* ── Activity list ──────────────────────────────────────── */
 
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 18px;
+  padding: 6px;
 }
 
-.card--muted {
+.activity { display: flex; flex-direction: column; }
+
+.activity__item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 10px;
+}
+
+.activity__item + .activity__item { border-top: 1px solid var(--border); }
+
+.activity__icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  font-size: 18px;
   background: var(--surface-muted);
+  border-radius: 11px;
 }
 
-.card__heading {
-  margin: 0 0 8px;
-  font-size: 15px;
-  font-weight: 700;
-}
+.activity__body { flex: 1; min-width: 0; }
 
-.card__list {
-  margin: 0;
-  padding-inline-start: 18px;
-  color: var(--text-muted);
+.activity__title {
   font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.card__list li { margin-bottom: 4px; }
-.card__list li:last-child { margin-bottom: 0; }
+.activity__time {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
 
-/* ── Hero ───────────────────────────────────────────────── */
+.activity__amount {
+  flex-shrink: 0;
+  font-size: 13.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
 
-.hero {
+.activity__amount.is-credit { color: var(--positive); }
+
+/* ── Placeholders (tasks / invite / profile tabs) ───────── */
+
+.placeholder {
+  margin-top: 18px;
+  padding: 40px 20px;
   text-align: center;
-  padding: 28px 18px;
 }
 
-.hero__icon {
-  font-size: 42px;
-  margin-bottom: 10px;
-}
+.placeholder__icon { font-size: 40px; }
 
-.hero__title {
-  margin: 0 0 6px;
-  font-size: 19px;
+.placeholder__title {
+  margin: 10px 0 6px;
+  font-size: 17px;
   font-weight: 800;
 }
 
-.hero__text {
+.placeholder__text {
   margin: 0 auto;
-  max-width: 300px;
-  font-size: 13.5px;
+  max-width: 260px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 
-/* ── Footer ─────────────────────────────────────────────── */
+/* ── Bottom navigation ──────────────────────────────────── */
 
-.shell__footer {
-  margin-top: auto;
-  padding-top: 10px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--text-muted);
+.bottom-nav {
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  max-width: 480px;
+  margin: 0 auto;
+  height: var(--nav-height);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding-bottom: env(safe-area-inset-bottom, 0);
 }
 
-.shell__footer p { margin: 0; }
+.bottom-nav__item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  font: inherit;
+  color: var(--text-muted);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.bottom-nav__icon { font-size: 19px; line-height: 1; }
+.bottom-nav__label { font-size: 10.5px; }
+
+.bottom-nav__item.is-active { color: var(--accent); }
 
 /* ── Small screens ──────────────────────────────────────── */
 
 @media (max-width: 360px) {
-  .shell { padding: 12px 12px 24px; }
-  .hero__title { font-size: 17px; }
+  .app { padding-inline: 12px; }
+  .balance__amount { font-size: 29px; }
+  .quick { gap: 7px; }
 }

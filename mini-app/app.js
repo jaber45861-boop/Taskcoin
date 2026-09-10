@@ -1,62 +1,183 @@
-/* Taskcoin Mini App — shell bootstrap
-   Presentation only: adapts to the Telegram client theme and expands the
-   viewport. No bot API calls, no network requests, no business logic. */
+/* Taskcoin Mini App — Dashboard
+   Static demo data for presentation only. No bot API calls, no network
+   requests, no database access. Telegram theme sync only. */
 
 (function () {
   "use strict";
 
-  var tg = window.Telegram && window.Telegram.WebApp;
-  if (!tg) return; // opened in a plain browser — static defaults already apply
+  // ── Static demo data (display only) ──────────────────────
+  var DEMO = {
+    balance: {
+      amount: "12.47",
+      points: "1,250 نقطة",
+    },
+    quickActions: [
+      { icon: "🎯", label: "المهام",     nav: "tasks" },
+      { icon: "👥", label: "دعوة صديق", nav: "invite" },
+      { icon: "💸", label: "سحب",       nav: "profile" },
+      { icon: "🎁", label: "المكافآت",  nav: "home" },
+    ],
+    activity: [
+      { icon: "✅", title: "مهمة: الانضمام لقناة", time: "قبل ساعتين",  amount: "+$0.02", credit: true },
+      { icon: "👥", title: "مكافأة دعوة صديق",     time: "أمس",        amount: "+$0.01", credit: true },
+      { icon: "🎯", title: "مهمة إحالة مكتملة",    time: "أمس",        amount: "+$0.01", credit: true },
+      { icon: "💸", title: "طلب سحب",              time: "قبل 3 أيام", amount: "-$1.00", credit: false },
+      { icon: "✅", title: "مكافأة متابعة قناة",   time: "قبل 4 أيام", amount: "+$0.01", credit: true },
+    ],
+  };
 
-  // Announce the app is ready (removes Telegram's loading placeholder).
-  tg.ready();
-  tg.expand();
+  // ── Renderers ────────────────────────────────────────────
+  function renderBalance() {
+    var amount = document.getElementById("balance-amount");
+    var points = document.getElementById("balance-points");
+    if (amount) {
+      amount.innerHTML = "";
+      amount.appendChild(document.createTextNode(DEMO.balance.amount));
+      var unit = document.createElement("small");
+      unit.textContent = "USD";
+      amount.appendChild(unit);
+    }
+    if (points) points.textContent = DEMO.balance.points;
 
-  // ── Telegram theme → CSS variables ────────────────────────
-  function themeColor(cssVar, key, fallback) {
-    var param = tg.themeParams && tg.themeParams[key];
-    return typeof param === "string" && param ? param : fallback;
+    var count = document.getElementById("activity-count");
+    if (count) count.textContent = DEMO.activity.length + " عمليات";
   }
 
-  function applyTheme() {
-    var root = document.documentElement.style;
-    root.setProperty("--bg", themeColor("--bg", "secondary_bg_color", "#0e1621"));
-    root.setProperty("--surface", themeColor("--surface", "bg_color", "#17212b"));
-    root.setProperty(
-      "--surface-muted",
-      themeColor("--surface-muted", "bg_color", "#1c2733")
-    );
-    root.setProperty("--border", themeColor("--border", "section_separator_color", "#243243"));
-    root.setProperty("--text", themeColor("--text", "text_color", "#f5f5f5"));
-    root.setProperty(
-      "--text-muted",
-      themeColor("--text-muted", "hint_color", "#8fa3b5")
-    );
-    root.setProperty("--accent", themeColor("--accent", "button_color", "#f0b90b"));
-    root.setProperty(
-      "--accent-text",
-      themeColor("--accent-text", "button_text_color", "#10161d")
-    );
+  function renderQuickActions() {
+    var host = document.getElementById("quick-actions");
+    if (!host) return;
+    host.innerHTML = "";
+    DEMO.quickActions.forEach(function (a) {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "quick__item";
+      if (a.nav && a.nav !== "home") btn.setAttribute("data-nav-jump", a.nav);
 
-    var header = document.querySelector(".shell__header");
-    if (header && typeof tg.setHeaderColor === "function") {
-      try { tg.setHeaderColor("bg_color"); } catch (e) { /* older clients */ }
+      var icon = document.createElement("span");
+      icon.className = "quick__icon";
+      icon.textContent = a.icon;
+
+      var label = document.createElement("span");
+      label.className = "quick__label";
+      label.textContent = a.label;
+
+      btn.appendChild(icon);
+      btn.appendChild(label);
+      host.appendChild(btn);
+    });
+  }
+
+  function renderActivity() {
+    var host = document.getElementById("activity-list");
+    if (!host) return;
+    host.innerHTML = "";
+    DEMO.activity.forEach(function (item) {
+      var row = document.createElement("div");
+      row.className = "activity__item";
+
+      var icon = document.createElement("span");
+      icon.className = "activity__icon";
+      icon.textContent = item.icon;
+
+      var body = document.createElement("span");
+      body.className = "activity__body";
+
+      var title = document.createElement("span");
+      title.className = "activity__title";
+      title.textContent = item.title;
+
+      var time = document.createElement("span");
+      time.className = "activity__time";
+      time.textContent = item.time;
+
+      var amount = document.createElement("span");
+      amount.className = "activity__amount" + (item.credit ? " is-credit" : "");
+      amount.textContent = item.amount;
+
+      body.appendChild(title);
+      body.appendChild(time);
+      row.appendChild(icon);
+      row.appendChild(body);
+      row.appendChild(amount);
+      host.appendChild(row);
+    });
+  }
+
+  // ── Bottom navigation ────────────────────────────────────
+  function switchView(name) {
+    var views = document.querySelectorAll(".view");
+    for (var i = 0; i < views.length; i++) {
+      views[i].classList.toggle("is-active", views[i].getAttribute("data-view") === name);
+    }
+    var buttons = document.querySelectorAll(".bottom-nav__item");
+    for (var j = 0; j < buttons.length; j++) {
+      buttons[j].classList.toggle("is-active", buttons[j].getAttribute("data-nav") === name);
+    }
+    window.scrollTo({ top: 0 });
+  }
+
+  function bindNavigation() {
+    var nav = document.getElementById("bottom-nav");
+    if (nav) {
+      nav.addEventListener("click", function (e) {
+        var btn = e.target.closest("[data-nav]");
+        if (btn) switchView(btn.getAttribute("data-nav"));
+      });
+    }
+    // Quick-action buttons can jump to a tab.
+    var quick = document.getElementById("quick-actions");
+    if (quick) {
+      quick.addEventListener("click", function (e) {
+        var btn = e.target.closest("[data-nav-jump]");
+        if (btn) switchView(btn.getAttribute("data-nav-jump"));
+      });
     }
   }
 
-  applyTheme();
-  if (typeof tg.onEvent === "function") {
-    tg.onEvent("themeChanged", applyTheme);
+  // ── Telegram theme sync (presentation only) ──────────────
+  function bindTelegramTheme() {
+    var tg = window.Telegram && window.Telegram.WebApp;
+    if (!tg) return; // opened in a plain browser — static defaults apply
+
+    tg.ready();
+    tg.expand();
+
+    function themeColor(key, fallback) {
+      var param = tg.themeParams && tg.themeParams[key];
+      return typeof param === "string" && param ? param : fallback;
+    }
+
+    function applyTheme() {
+      var root = document.documentElement.style;
+      root.setProperty("--bg", themeColor("secondary_bg_color", "#0e1621"));
+      root.setProperty("--surface", themeColor("bg_color", "#17212b"));
+      root.setProperty("--surface-muted", themeColor("bg_color", "#1c2733"));
+      root.setProperty("--border", themeColor("section_separator_color", "#243243"));
+      root.setProperty("--text", themeColor("text_color", "#f5f5f5"));
+      root.setProperty("--text-muted", themeColor("hint_color", "#8fa3b5"));
+      root.setProperty("--accent", themeColor("button_color", "#f0b90b"));
+      root.setProperty("--accent-text", themeColor("button_text_color", "#10161d"));
+      try { tg.setHeaderColor("bg_color"); } catch (e) { /* older clients */ }
+    }
+
+    applyTheme();
+    if (typeof tg.onEvent === "function") tg.onEvent("themeChanged", applyTheme);
+
+    var badge = document.getElementById("connection-badge");
+    var label = document.getElementById("connection-label");
+    if (badge && label) {
+      badge.hidden = false;
+      label.textContent =
+        tg.initDataUnsafe && tg.initDataUnsafe.user
+          ? "مرحبًا، " + (tg.initDataUnsafe.user.first_name || "بالمستخدم")
+          : "متصل";
+    }
   }
 
-  // ── Connection badge (visual only) ───────────────────────
-  var badge = document.getElementById("connection-badge");
-  var label = document.getElementById("connection-label");
-  if (badge && label) {
-    badge.hidden = false;
-    label.textContent = typeof tg.initDataUnsafe === "object" &&
-      tg.initDataUnsafe && tg.initDataUnsafe.user
-      ? "مرحبًا، " + (tg.initDataUnsafe.user.first_name || "بالمستخدم")
-      : "متصل";
-  }
+  // ── Boot ─────────────────────────────────────────────────
+  renderBalance();
+  renderQuickActions();
+  renderActivity();
+  bindNavigation();
+  bindTelegramTheme();
 })();

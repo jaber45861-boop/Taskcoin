@@ -9,42 +9,99 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <main class="shell">
+  <main class="app">
 
-    <header class="shell__header">
-      <div class="shell__brand">
-        <span class="shell__logo">🪙</span>
-        <div class="shell__titles">
-          <h1 class="shell__title">Taskcoin</h1>
-          <p class="shell__subtitle">اكسب من مهام بسيطة</p>
+    <!-- ═══ Home / Dashboard ═══ -->
+    <section class="view is-active" id="view-home" data-view="home">
+
+      <header class="header">
+        <div class="header__brand">
+          <span class="header__logo">🪙</span>
+          <span class="header__name">Taskcoin</span>
         </div>
+        <span class="header__badge" id="connection-badge" hidden>
+          <span class="header__badge-dot"></span>
+          <span id="connection-label">متصل</span>
+        </span>
+      </header>
+
+      <!-- Balance Card -->
+      <section class="balance">
+        <div class="balance__top">
+          <span class="balance__caption">الرصيد الحالي</span>
+          <span class="balance__chip" id="balance-trend">▲ أسبوع جيد</span>
+        </div>
+        <div class="balance__amount" id="balance-amount">—</div>
+        <div class="balance__meta">
+          <span id="balance-points">—</span>
+          <span class="balance__sep">•</span>
+          <span>محفظة USD</span>
+        </div>
+      </section>
+
+      <!-- Quick Actions -->
+      <section class="section">
+        <h2 class="section__title">إجراءات سريعة</h2>
+        <div class="quick" id="quick-actions"><!-- rendered by app.js --></div>
+      </section>
+
+      <!-- Activity -->
+      <section class="section">
+        <div class="section__head">
+          <h2 class="section__title">النشاط الأخير</h2>
+          <span class="section__hint" id="activity-count"></span>
+        </div>
+        <div class="activity card" id="activity-list"><!-- rendered by app.js --></div>
+      </section>
+
+    </section>
+
+    <!-- ═══ Tasks (placeholder) ═══ -->
+    <section class="view" id="view-tasks" data-view="tasks">
+      <div class="placeholder card">
+        <div class="placeholder__icon">🎯</div>
+        <h2 class="placeholder__title">المهام</h2>
+        <p class="placeholder__text">قائمة المهام ستظهر هنا قريبًا.</p>
       </div>
-      <span class="shell__connection" id="connection-badge" hidden>
-        <span class="shell__connection-dot"></span>
-        <span id="connection-label">متصل</span>
-      </span>
-    </header>
-
-    <section class="hero card">
-      <div class="hero__icon">🎁</div>
-      <h2 class="hero__title">شاهد واربح من التطبيق</h2>
-      <p class="hero__text">
-        هذه نسخة أولية من التطبيق. المحتوى التفاعلي سيظهر هنا عند توفره.
-      </p>
     </section>
 
-    <section class="card card--muted">
-      <h3 class="card__heading">جاهز للتوسعة</h3>
-      <ul class="card__list">
-        <li>واجهة مدمجة مع ثيم تيليجرام تلقائيًا</li>
-        <li>دعم كامل للعربية واتجاه RTL</li>
-        <li>عرض متجاوب لجميع الشاشات</li>
-      </ul>
+    <!-- ═══ Invite (placeholder) ═══ -->
+    <section class="view" id="view-invite" data-view="invite">
+      <div class="placeholder card">
+        <div class="placeholder__icon">👥</div>
+        <h2 class="placeholder__title">دعوة الأصدقاء</h2>
+        <p class="placeholder__text">رابط الدعوة الخاص بك سيظهر هنا قريبًا.</p>
+      </div>
     </section>
 
-    <footer class="shell__footer">
-      <p>Taskcoin Mini App</p>
-    </footer>
+    <!-- ═══ Profile (placeholder) ═══ -->
+    <section class="view" id="view-profile" data-view="profile">
+      <div class="placeholder card">
+        <div class="placeholder__icon">👤</div>
+        <h2 class="placeholder__title">حسابي</h2>
+        <p class="placeholder__text">ملفك الشخصي وإعداداتك ستظهر هنا قريبًا.</p>
+      </div>
+    </section>
+
+    <!-- ═══ Bottom Navigation ═══ -->
+    <nav class="bottom-nav" id="bottom-nav">
+      <button class="bottom-nav__item is-active" data-nav="home" type="button">
+        <span class="bottom-nav__icon">🏠</span>
+        <span class="bottom-nav__label">الرئيسية</span>
+      </button>
+      <button class="bottom-nav__item" data-nav="tasks" type="button">
+        <span class="bottom-nav__icon">🎯</span>
+        <span class="bottom-nav__label">المهام</span>
+      </button>
+      <button class="bottom-nav__item" data-nav="invite" type="button">
+        <span class="bottom-nav__icon">👥</span>
+        <span class="bottom-nav__label">الدعوات</span>
+      </button>
+      <button class="bottom-nav__item" data-nav="profile" type="button">
+        <span class="bottom-nav__icon">👤</span>
+        <span class="bottom-nav__label">حسابي</span>
+      </button>
+    </nav>
 
   </main>
 
