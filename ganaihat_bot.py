@@ -10065,21 +10065,23 @@ def handle_admin_reply(message):
                 [InlineKeyboardButton("↩️ رد", callback_data=f"admin_reply_{inq2['id']}")],
                 [InlineKeyboardButton("🔙 رجوع", callback_data=ADMIN_CATEGORY_CALLBACKS[cat])],
             ])
-            bot.send_message(
-                message.chat.id,
+            bot.edit_message_text(
                 f"📥 <b>{label}</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n\n"
                 f"👤 <b>المستخدم:</b> {user_name2} (<code>{inq2['user_id']}</code>)\n"
                 f"💬 <b>الرسالة:</b>\n{inq2['message']}"
                 f"\n\n"
                 f"🕐 {inq2['created_at']}",
+                chat_id=message.chat.id,
+                message_id=message.message_id,
                 reply_markup=kb2,
             )
         else:
-            bot.send_message(
-                message.chat.id,
+            bot.edit_message_text(
                 f"✅ تم إرسال الرد على #{inquiry_id}\n\n"
                 f"✅ لا توجد رسائل غير مقروءة في هذا التصنيف.",
+                chat_id=message.chat.id,
+                message_id=message.message_id,
                 reply_markup=admin_keyboard(user_id),
             )
     else:
