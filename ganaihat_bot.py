@@ -9999,6 +9999,7 @@ def callback_admin_reply_start(call):
         "step": "awaiting_admin_reply",
         "inquiry_id": inquiry_id,
         "category": inq["category"],
+        "last_category_message_id": call.message.message_id,
     }
     label = CATEGORY_LABELS.get(inq["category"], inq["category"])
     user = get_user(inq["user_id"])
