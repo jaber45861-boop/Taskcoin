@@ -10074,7 +10074,7 @@ def handle_admin_reply(message):
                 f"\n\n"
                 f"🕐 {inq2['created_at']}",
                 chat_id=message.chat.id,
-                message_id=message.message_id,
+                message_id=state.get("last_category_message_id") or message.message_id,
                 reply_markup=kb2,
             )
         else:
@@ -10082,7 +10082,7 @@ def handle_admin_reply(message):
                 f"✅ تم إرسال الرد على #{inquiry_id}\n\n"
                 f"✅ لا توجد رسائل غير مقروءة في هذا التصنيف.",
                 chat_id=message.chat.id,
-                message_id=message.message_id,
+                message_id=state.get("last_category_message_id") or message.message_id,
                 reply_markup=admin_keyboard(user_id),
             )
     else:
