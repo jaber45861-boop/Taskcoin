@@ -168,6 +168,42 @@ body {
 
 .balance__sep { margin: 0 6px; }
 
+/* ── Balance card actions ───────────────────────────────── */
+
+.balance__actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.balance__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 10px 14px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: transform 120ms ease, filter 120ms ease;
+}
+
+.balance__btn:active { transform: scale(0.97); }
+
+.balance__btn--primary {
+  color: var(--accent-text);
+  background: var(--accent);
+  border-color: transparent;
+}
+
+.balance__btn--primary:active { filter: brightness(0.92); }
+
 /* ── Sections ───────────────────────────────────────────── */
 
 .section { margin-top: 20px; }
@@ -196,41 +232,45 @@ body {
 
 .quick {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 10px;
 }
 
 .quick__item {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  gap: 7px;
-  padding: 13px 6px 11px;
+  gap: 11px;
+  padding: 12px 14px;
+  min-height: 56px;
   font: inherit;
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 14px;
   cursor: pointer;
+  text-align: start;
   transition: transform 120ms ease, border-color 120ms ease;
 }
 
-.quick__item:active { transform: scale(0.96); }
+.quick__item:active { transform: scale(0.97); }
 
 .quick__icon {
   display: grid;
   place-items: center;
-  width: 38px;
-  height: 38px;
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
   font-size: 19px;
   background: var(--surface-muted);
   border-radius: 11px;
 }
 
 .quick__label {
-  font-size: 11.5px;
-  color: var(--text-muted);
-  text-align: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  text-align: start;
 }
 
 /* ── Activity list ──────────────────────────────────────── */
@@ -351,5 +391,9 @@ body {
 @media (max-width: 360px) {
   .app { padding-inline: 12px; }
   .balance__amount { font-size: 29px; }
-  .quick { gap: 7px; }
+  .balance__btn { min-height: 42px; font-size: 13.5px; }
+  .quick { gap: 8px; }
+  .quick__item { min-height: 54px; padding: 11px 12px; }
+  .activity__title { font-size: 13px; }
+  .bottom-nav__item { min-height: 44px; }
 }
