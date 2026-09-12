@@ -3,6 +3,7 @@
 Handles:
   - /healthz health check
   - /api/rewards/balance  — authenticated balance lookup
+  - /api/profile          — authenticated user profile
   - /api/rewards/postback — Monetag rewarded-ad postback receiver
   - /api/rewards/session  — Mini App session verification
   - /payment/callback     — provider-agnostic commission webhook
@@ -274,6 +275,68 @@ def register_reward_api(
             "user_id": uid,
             "balance_usd_nano": balance_nano,
             "balance_usd": round(balance_usd, 9),
+        })
+
+    @app.route("/api/profile")
+    def api_profile():
+        """Return the authenticated user's profile data.
+
+        Mirrors the Telegram callback_profile data sources.
+        """
+        uid = _authenticate_user()
+        if uid is None:
+            return jsonify({"error": "unauthorized"}), 401
+        user = get_user(uid)
+        if user is None:
+            return jsonify({"error": "user_not_found"}), 404
+
+        # Balance
+        try:
+            balance_nano = max(0, int(user["balance_usd_nano"] or 0))
+        except (KeyError, TypeError):
+            balance_nano = 0
+        from decimal import Decimal as _D
+        balance_usd = float(_D(balance_nano) / _D("1000000000"))
+
+        # Full name
+        first_name = user["first_name"] or ""
+        last_name = user["last_name"] or ""
+        full_name = " ".join(filter(None, [first_name, last_name]))
+
+        # Referral count
+        try:
+            conn = get_connection()
+            ref_row = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM referrals "
+                "WHERE referrer_id = ? AND reward_status = 'rewarded'",
+                (uid,),
+            ).fetchone()
+            ref_count = ref_row["cnt"] if ref_row else 0
+        except sqlite3.Error:
+            ref_count = 0
+
+        # Recent orders count
+        try:
+            conn = get_connection()
+            orders = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM smm_orders WHERE user_id = ?",
+                (uid,),
+            ).fetchone()
+            orders_count = orders["cnt"] if orders else 0
+        except sqlite3.Error:
+            orders_count = 0
+
+        return jsonify({
+            "user_id": uid,
+            "first_name": first_name,
+            "last_name": last_name or None,
+            "username": user["username"] or None,
+            "full_name": full_name,
+            "balance_usd_nano": balance_nano,
+            "balance_usd": round(balance_usd, 9),
+            "referral_count": ref_count,
+            "orders_count": orders_count,
+            "joined_at": user["joined_at"],
         })
 
     @app.route("/api/rewards/postback", methods=["POST"])
