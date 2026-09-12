@@ -303,27 +303,25 @@ def register_reward_api(
         last_name = user["last_name"] or ""
         full_name = " ".join(filter(None, [first_name, last_name]))
 
-        # Referral count
+        # Referral count + recent orders count (single connection)
+        ref_count = 0
+        orders_count = 0
         try:
-            conn = get_connection()
-            ref_row = conn.execute(
-                "SELECT COUNT(*) AS cnt FROM referrals "
-                "WHERE referrer_id = ? AND reward_status = 'rewarded'",
-                (uid,),
-            ).fetchone()
-            ref_count = ref_row["cnt"] if ref_row else 0
+            with get_connection() as conn:
+                ref_row = conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM referrals "
+                    "WHERE referrer_id = ? AND reward_status = 'rewarded'",
+                    (uid,),
+                ).fetchone()
+                ref_count = ref_row["cnt"] if ref_row else 0
+
+                orders_row = conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM smm_orders WHERE user_id = ?",
+                    (uid,),
+                ).fetchone()
+                orders_count = orders_row["cnt"] if orders_row else 0
         except sqlite3.Error:
             ref_count = 0
-
-        # Recent orders count
-        try:
-            conn = get_connection()
-            orders = conn.execute(
-                "SELECT COUNT(*) AS cnt FROM smm_orders WHERE user_id = ?",
-                (uid,),
-            ).fetchone()
-            orders_count = orders["cnt"] if orders else 0
-        except sqlite3.Error:
             orders_count = 0
 
         return jsonify({
