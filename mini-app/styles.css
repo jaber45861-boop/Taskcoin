@@ -428,6 +428,59 @@ body {
 }
 .bottom-nav__item.is-active .bottom-nav__label { font-weight: 700; }
 
+/* ── Profile ───────────────────────────────────────────── */
+
+.profile {
+  padding: 20px 16px;
+}
+
+.profile__avatar {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 10px;
+  font-size: 32px;
+  background: var(--surface-muted);
+  border-radius: 50%;
+}
+
+.profile__name {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.profile__username {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.profile__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 4px;
+}
+
+.profile__row + .profile__row {
+  border-top: 1px solid var(--border);
+}
+
+.profile__label {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.profile__value {
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── Interaction states: active + keyboard focus ────────── */
 
 .balance__btn:active,
