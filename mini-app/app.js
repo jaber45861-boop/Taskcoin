@@ -113,6 +113,7 @@
     for (var j = 0; j < buttons.length; j++) {
       buttons[j].classList.toggle("is-active", buttons[j].getAttribute("data-nav") === name);
     }
+    if (name === "profile") renderProfile();
     window.scrollTo({ top: 0 });
   }
 
@@ -132,6 +133,90 @@
         if (btn) switchView(btn.getAttribute("data-nav-jump"));
       });
     }
+  }
+
+  // ── Profile (live data from /api/profile) ──────────────
+  var profileCache = null;
+  var profileLoading = false;
+
+  function renderProfile() {
+    var host = document.getElementById("view-profile");
+    if (!host) return;
+
+    // Already rendered with live data — skip
+    if (profileCache && host.querySelector(".profile__name")) return;
+
+    // Show loading state
+    host.innerHTML =
+      '<div class="placeholder card">' +
+      '<div class="placeholder__icon">👤</div>' +
+      '<h2 class="placeholder__title">جاري التحميل…</h2>' +
+      '</div>';
+
+    if (profileLoading) return;
+    profileLoading = true;
+
+    fetch("/api/profile")
+      .then(function (res) {
+        if (!res.ok) throw res.status;
+        return res.json();
+      })
+      .then(function (data) {
+        profileCache = data;
+        profileLoading = false;
+        _paintProfile(host, data);
+      })
+      .catch(function () {
+        profileLoading = false;
+        host.innerHTML =
+          '<div class="placeholder card">' +
+          '<div class="placeholder__icon">👤</div>' +
+          '<h2 class="placeholder__title">حسابي</h2>' +
+          '<p class="placeholder__text">تعذر تحميل البيانات. سجّل الدخول أولاً.</p>' +
+          '</div>';
+      });
+  }
+
+  function _paintProfile(host, d) {
+    var balance = typeof d.balance_usd === "number" ? d.balance_usd.toFixed(2) : "0.00";
+    var username = d.username ? "@" + d.username : "—";
+    var fullName = d.full_name || d.first_name || "—";
+    var joined = d.joined_at ? d.joined_at.slice(0, 10) : "—";
+
+    host.innerHTML =
+      '<div class="card profile">' +
+      '  <div class="profile__avatar">👤</div>' +
+      '  <h2 class="profile__name">' + _esc(fullName) + "</h2>" +
+      '  <p class="profile__username">' + _esc(username) + "</p>" +
+      "</div>" +
+      '<div class="card profile">' +
+      "  <div class=\"profile__row\">" +
+      "    <span class=\"profile__label\">💰 الرصيد</span>" +
+      "    <span class=\"profile__value\">$" + _esc(balance) + "</span>" +
+      "  </div>" +
+      "  <div class=\"profile__row\">" +
+      "    <span class=\"profile__label\">👥 الإحالات</span>" +
+      "    <span class=\"profile__value\">" + (d.referral_count || 0) + "</span>" +
+      "  </div>" +
+      "  <div class=\"profile__row\">" +
+      "    <span class=\"profile__label\">📦 طلبات المتجر</span>" +
+      "    <span class=\"profile__value\">" + (d.orders_count || 0) + "</span>" +
+      "  </div>" +
+      "  <div class=\"profile__row\">" +
+      "    <span class=\"profile__label\">📅 تاريخ التسجيل</span>" +
+      "    <span class=\"profile__value\">" + _esc(joined) + "</span>" +
+      "  </div>" +
+      "  <div class=\"profile__row\">" +
+      "    <span class=\"profile__label\">🆔 المعرّف</span>" +
+      "    <span class=\"profile__value\">" + d.user_id + "</span>" +
+      "  </div>" +
+      "</div>";
+  }
+
+  function _esc(s) {
+    var el = document.createElement("span");
+    el.textContent = s;
+    return el.innerHTML;
   }
 
   // ── Telegram theme sync (presentation only) ──────────────
