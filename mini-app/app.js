@@ -156,7 +156,7 @@
     if (profileLoading) return;
     profileLoading = true;
 
-    fetch("/api/profile")
+    fetch("/api/profile", { credentials: "include" })
       .then(function (res) {
         if (!res.ok) throw res.status;
         return res.json();
