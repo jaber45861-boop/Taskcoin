@@ -5739,11 +5739,6 @@ def place_smm_order(service_id: str, link: str, quantity: int) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 def main_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
     markup = InlineKeyboardMarkup()
-    if TELEGRAM_MINI_APP_URL.startswith("https://"):
-        markup.add(InlineKeyboardButton(
-            "🎁 شاهد واربح من التطبيق",
-            web_app=WebAppInfo(url=TELEGRAM_MINI_APP_URL),
-        ))
     markup.row(
         InlineKeyboardButton("👤 الملف الشخصي", callback_data="profile"),
         InlineKeyboardButton("🎯 شارك الرابط واربح",   callback_data="earn_points"),
