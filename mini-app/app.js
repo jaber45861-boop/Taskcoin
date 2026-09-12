@@ -135,6 +135,44 @@
     }
   }
 
+  // ── Session auth ────────────────────────────────────────
+  var sessionToken = null;
+  var sessionReady = null; // Promise that resolves when session is ready
+
+  function initSession() {
+    var tg = window.Telegram && window.Telegram.WebApp;
+    var initData = tg && tg.initData;
+    if (!initData) {
+      sessionReady = Promise.resolve(null);
+      return sessionReady;
+    }
+    sessionReady = fetch("/api/rewards/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ initData: initData }),
+    })
+      .then(function (res) {
+        if (!res.ok) throw res.status;
+        return res.json();
+      })
+      .then(function (data) {
+        if (data.ok && data.session_token) {
+          sessionToken = data.session_token;
+        }
+        return sessionToken;
+      })
+      .catch(function () {
+        return null;
+      });
+    return sessionReady;
+  }
+
+  function authHeaders() {
+    var h = { "Content-Type": "application/json" };
+    if (sessionToken) h["Authorization"] = "Bearer " + sessionToken;
+    return h;
+  }
+
   // ── Profile (live data from /api/profile) ──────────────
   var profileCache = null;
   var profileLoading = false;
@@ -156,25 +194,36 @@
     if (profileLoading) return;
     profileLoading = true;
 
-    fetch("/api/profile", { credentials: "include" })
-      .then(function (res) {
-        if (!res.ok) throw res.status;
-        return res.json();
+    var fetchProfile = function () {
+      return fetch("/api/profile", {
+        credentials: "include",
+        headers: authHeaders(),
       })
-      .then(function (data) {
-        profileCache = data;
-        profileLoading = false;
-        _paintProfile(host, data);
-      })
-      .catch(function () {
-        profileLoading = false;
-        host.innerHTML =
-          '<div class="placeholder card">' +
-          '<div class="placeholder__icon">👤</div>' +
-          '<h2 class="placeholder__title">حسابي</h2>' +
-          '<p class="placeholder__text">تعذر تحميل البيانات. سجّل الدخول أولاً.</p>' +
-          '</div>';
-      });
+        .then(function (res) {
+          if (!res.ok) throw res.status;
+          return res.json();
+        })
+        .then(function (data) {
+          profileCache = data;
+          profileLoading = false;
+          _paintProfile(host, data);
+        })
+        .catch(function () {
+          profileLoading = false;
+          host.innerHTML =
+            '<div class="placeholder card">' +
+            '<div class="placeholder__icon">👤</div>' +
+            '<h2 class="placeholder__title">حسابي</h2>' +
+            '<p class="placeholder__text">تعذر تحميل البيانات. سجّل الدخول أولاً.</p>' +
+            '</div>';
+        });
+    };
+
+    if (sessionReady) {
+      sessionReady.then(fetchProfile);
+    } else {
+      fetchProfile();
+    }
   }
 
   function _paintProfile(host, d) {
@@ -260,6 +309,7 @@
   }
 
   // ── Boot ─────────────────────────────────────────────────
+  initSession();
   renderBalance();
   renderQuickActions();
   renderActivity();
