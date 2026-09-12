@@ -217,6 +217,8 @@ def register_reward_api(
     cpagrip_key: str = "",
     cpagrip_rss_url: str = "https://www.cpagrip.com/common/offer_feed_rss.php",
     cpalead_postback_password: str = "",
+    get_referral_count=None,
+    get_user_orders=None,
 ):
     """Register Flask routes for the Mini App reward API."""
     global _live_egp_per_usd
@@ -303,25 +305,18 @@ def register_reward_api(
         last_name = user["last_name"] or ""
         full_name = " ".join(filter(None, [first_name, last_name]))
 
-        # Referral count + recent orders count (single connection)
+        # Referral count — same function as callback_profile
         ref_count = 0
         orders_count = 0
         try:
-            with get_connection() as conn:
-                ref_row = conn.execute(
-                    "SELECT COUNT(*) AS cnt FROM referrals "
-                    "WHERE referrer_id = ? AND reward_status = 'rewarded'",
-                    (uid,),
-                ).fetchone()
-                ref_count = ref_row["cnt"] if ref_row else 0
-
-                orders_row = conn.execute(
-                    "SELECT COUNT(*) AS cnt FROM smm_orders WHERE user_id = ?",
-                    (uid,),
-                ).fetchone()
-                orders_count = orders_row["cnt"] if orders_row else 0
-        except sqlite3.Error:
+            if get_referral_count is not None:
+                ref_count = get_referral_count(uid)
+        except Exception:
             ref_count = 0
+        try:
+            if get_user_orders is not None:
+                orders_count = len(get_user_orders(uid, limit=3))
+        except Exception:
             orders_count = 0
 
         return jsonify({

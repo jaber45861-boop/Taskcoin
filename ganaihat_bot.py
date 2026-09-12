@@ -12370,6 +12370,8 @@ def run_bot():
         cpagrip_key=CPAGRIP_KEY,
         cpagrip_rss_url=CPAGRIP_RSS_URL,
         cpalead_postback_password=CPALEAD_POSTBACK_PASSWORD,
+        get_referral_count=get_referral_count,
+        get_user_orders=get_user_orders,
     )
     if not API_SECRET:
         logging.getLogger("telegram_reward_api").warning(

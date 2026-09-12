@@ -173,6 +173,28 @@ class TestApiProfile(unittest.TestCase):
             c.close()
             return row
 
+        def get_referral_count(uid):
+            c = sqlite3.connect(cls.db_path)
+            c.row_factory = sqlite3.Row
+            row = c.execute(
+                "SELECT COUNT(*) AS cnt FROM referrals "
+                "WHERE referrer_id = ? AND reward_status = 'rewarded'",
+                (uid,),
+            ).fetchone()
+            c.close()
+            return row["cnt"] if row else 0
+
+        def get_user_orders(uid, limit=5):
+            c = sqlite3.connect(cls.db_path)
+            c.row_factory = sqlite3.Row
+            rows = c.execute(
+                "SELECT * FROM smm_orders WHERE user_id = ? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (uid, limit),
+            ).fetchall()
+            c.close()
+            return rows
+
         register_reward_api(
             cls.app,
             get_connection=get_conn,
@@ -186,6 +208,8 @@ class TestApiProfile(unittest.TestCase):
             monetag_zone_id="",
             allowed_origins="*",
             egp_per_usd=50.0,
+            get_referral_count=get_referral_count,
+            get_user_orders=get_user_orders,
         )
 
     @classmethod
