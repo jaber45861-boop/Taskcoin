@@ -20,7 +20,7 @@ var DEMO = {
     var amount = document.getElementById("balance-amount");
     if (amount) {
       amount.innerHTML = "";
-      amount.appendChild(document.createTextNode("—"));
+      amount.appendChild(document.createTextNode("0.00"));
     }
   }
 
