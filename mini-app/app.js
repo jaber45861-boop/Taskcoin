@@ -9,16 +9,9 @@
 var DEMO = {
     quickActions: [
       { icon: "🎯", label: "المهام",     nav: "tasks" },
-      { icon: "👥", label: "دعوة صديق", nav: "invite" },
+      { icon: "👥", label: "invitation صديق", nav: "invite" },
       { icon: "💸", label: " withdrawal",       nav: "profile" },
       { icon: "🎁", label: "المكافآت",  nav: "home" },
-    ],
-    activity: [
-      { icon: "✅", title: "مهمة: الانضمام لقناة", time: "قبل ساعتين",  amount: "+$0.02", credit: true },
-      { icon: "👥", title: "مكافأة دعوة صديق",     time: "أمس",        amount: "+$0.01", credit: true },
-      { icon: "🎯", title: "مهمة إحالة مكتملة",    time: "أمس",        amount: "+$0.01", credit: true },
-      { icon: "💸", title: "طلب سحب",              time: "قبل 3 أيام", amount: "-$1.00", credit: false },
-      { icon: "✅", title: "مكافأة متابعة قناة",   time: "قبل 4 أيام", amount: "+$0.01", credit: true },
     ],
   };
 
@@ -58,37 +51,8 @@ var DEMO = {
   function renderActivity() {
     var host = document.getElementById("activity-list");
     if (!host) return;
-    host.innerHTML = "";
-    DEMO.activity.forEach(function (item) {
-      var row = document.createElement("div");
-      row.className = "activity__item";
-
-      var icon = document.createElement("span");
-      icon.className = "activity__icon";
-      icon.textContent = item.icon;
-
-      var body = document.createElement("span");
-      body.className = "activity__body";
-
-      var title = document.createElement("span");
-      title.className = "activity__title";
-      title.textContent = item.title;
-
-      var time = document.createElement("span");
-      time.className = "activity__time";
-      time.textContent = item.time;
-
-      var amount = document.createElement("span");
-      amount.className = "activity__amount" + (item.credit ? " is-credit" : "");
-      amount.textContent = item.amount;
-
-      body.appendChild(title);
-      body.appendChild(time);
-      row.appendChild(icon);
-      row.appendChild(body);
-      row.appendChild(amount);
-      host.appendChild(row);
-    });
+    host.innerHTML =
+      '<p class="placeholder__text">لا توجد نشاطات حتى الآن.</p>';
   }
 
   // ── Bottom navigation ────────────────────────────────────
