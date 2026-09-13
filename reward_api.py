@@ -219,6 +219,10 @@ def register_reward_api(
     cpalead_postback_password: str = "",
     get_referral_count=None,
     get_user_orders=None,
+    get_min_withdrawal=None,
+    usdt_min_usdt=None,
+    withdrawal_method_vodafone: str = "vodafone",
+    withdrawal_method_usdt: str = "usdt",
 ):
     """Register Flask routes for the Mini App reward API."""
     global _live_egp_per_usd
@@ -330,6 +334,55 @@ def register_reward_api(
             "referral_count": ref_count,
             "orders_count": orders_count,
             "joined_at": user["joined_at"],
+        })
+
+    @app.route("/api/withdraw/methods")
+    def api_withdraw_methods():
+        """Return available withdrawal methods for the authenticated user.
+
+        Data sources:
+        - get_min_withdrawal (from ganaihat_bot.py:3178, reads currency_settings)
+        - usdt_min_usdt (from ganaihat_bot.py:4929)
+        - withdrawal_method_vodafone / withdrawal_method_usdt (constants)
+        """
+        uid = _authenticate_user()
+        if uid is None:
+            return jsonify({"error": "unauthorized"}), 401
+        user = get_user(uid)
+        if user is None:
+            return jsonify({"error": "user_not_found"}), 404
+
+        if user.get("withdrawal_blocked"):
+            return jsonify({"error": "withdrawal_blocked"}), 403
+
+        # Read minimum withdrawal from currency_settings (same source as bot)
+        try:
+            min_withdrawal_cents = get_min_withdrawal()
+        except Exception:
+            return jsonify({"error": "settings_unavailable"}), 503
+
+        methods = [
+            {
+                "code": withdrawal_method_vodafone,
+                "name": "Vodafone Cash",
+                "name_ar": "فودافون كاش",
+                "type": "mobile_wallet",
+                "min_amount_egp_cents": min_withdrawal_cents,
+                "network": None
+            },
+            {
+                "code": withdrawal_method_usdt,
+                "name": "USDT (BEP20)",
+                "name_ar": "يوسدل (BEP20)",
+                "type": "crypto_wallet",
+                "min_amount_usdt": float(usdt_min_usdt),
+                "network": "BEP20"
+            }
+        ]
+
+        return jsonify({
+            "ok": True,
+            "methods": methods
         })
 
     @app.route("/api/rewards/postback", methods=["POST"])

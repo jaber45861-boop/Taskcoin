@@ -12372,6 +12372,10 @@ def run_bot():
         cpalead_postback_password=CPALEAD_POSTBACK_PASSWORD,
         get_referral_count=get_referral_count,
         get_user_orders=get_user_orders,
+        get_min_withdrawal=get_min_withdrawal,
+        usdt_min_usdt=USDT_MIN_USDT,
+        withdrawal_method_vodafone=WITHDRAWAL_METHOD_VODAFONE,
+        withdrawal_method_usdt=WITHDRAWAL_METHOD_USDT,
     )
     if not API_SECRET:
         logging.getLogger("telegram_reward_api").warning(
