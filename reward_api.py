@@ -446,7 +446,7 @@ def register_reward_api(
         if user is None:
             return jsonify({"error": "user_not_found"}), 404
 
-        if user.get("withdrawal_blocked"):
+        if user["withdrawal_blocked"]:
             return jsonify({"error": "withdrawal_blocked"}), 403
 
         if not account_access_allowed(uid):
