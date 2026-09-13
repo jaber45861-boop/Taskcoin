@@ -6,14 +6,11 @@
   "use strict";
 
   // ── Static demo data (display only) ──────────────────────
-  var DEMO = {
-    balance: {
-      amount: "12.47",
-    },
+var DEMO = {
     quickActions: [
       { icon: "🎯", label: "المهام",     nav: "tasks" },
       { icon: "👥", label: "دعوة صديق", nav: "invite" },
-      { icon: "💸", label: "سحب",       nav: "profile" },
+      { icon: "💸", label: " withdrawal",       nav: "profile" },
       { icon: "🎁", label: "المكافآت",  nav: "home" },
     ],
     activity: [
@@ -28,15 +25,10 @@
   // ── Renderers ────────────────────────────────────────────
   function renderBalance() {
     var amount = document.getElementById("balance-amount");
-    var points = document.getElementById("balance-points");
     if (amount) {
       amount.innerHTML = "";
-      amount.appendChild(document.createTextNode(DEMO.balance.amount));
-      var unit = document.createElement("small");
-      unit.textContent = "USD";
-      amount.appendChild(unit);
+      amount.appendChild(document.createTextNode("—"));
     }
-    if (points) points.textContent = DEMO.balance.points;
   }
 
   function renderQuickActions() {
