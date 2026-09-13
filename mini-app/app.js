@@ -9,7 +9,6 @@
   var DEMO = {
     balance: {
       amount: "12.47",
-      points: "1,250 نقطة",
     },
     quickActions: [
       { icon: "🎯", label: "المهام",     nav: "tasks" },
@@ -38,9 +37,6 @@
       amount.appendChild(unit);
     }
     if (points) points.textContent = DEMO.balance.points;
-
-    var count = document.getElementById("activity-count");
-    if (count) count.textContent = DEMO.activity.length + " عمليات";
   }
 
   function renderQuickActions() {
