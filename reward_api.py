@@ -223,6 +223,8 @@ def register_reward_api(
     usdt_min_usdt=None,
     withdrawal_method_vodafone: str = "vodafone",
     withdrawal_method_usdt: str = "usdt",
+    create_v2_withdrawal_request=None,
+    run_referral_withdrawal_double_check=None,
 ):
     """Register Flask routes for the Mini App reward API."""
     global _live_egp_per_usd
@@ -413,6 +415,107 @@ def register_reward_api(
             "ok": True,
             "min_amount_egp_cents": min_cents,
         })
+
+    @app.route("/api/withdraw", methods=["POST"])
+    def api_withdraw():
+        """Create a withdrawal request using create_v2_withdrawal_request().
+
+        Thin wrapper around the existing function from ganaihat_bot.py:5191.
+        No balance deduction logic is duplicated — the function handles it atomically.
+
+        Request body:
+            method_code: "vodafone" | "usdt"
+            destination: str (account/wallet details)
+            requested_egp_cents: int (for vodafone) OR
+            usdt_amount: Decimal (for usdt)
+            network_code: "BSC_BEP20" (required for usdt)
+
+        Returns:
+            200: {"ok": true, "request_id": <int>}
+            401: {"error": "unauthorized"}
+            403: {"error": "withdrawal_blocked" | "fraud" | "account_inactive"}
+            400: {"error": "invalid_destination" | "invalid_usdt_amount" | "invalid_egp_amount" | "method_not_supported" | "destination_invalid" | "below_minimum"}
+            402: {"error": "insufficient_balance"}
+            429: {"error": "cooldown"}
+            503: {"error": "rate_unavailable" | "verification_unavailable"}
+        """
+        uid = _authenticate_user()
+        if uid is None:
+            return jsonify({"error": "unauthorized"}), 401
+        user = get_user(uid)
+        if user is None:
+            return jsonify({"error": "user_not_found"}), 404
+
+        if user.get("withdrawal_blocked"):
+            return jsonify({"error": "withdrawal_blocked"}), 403
+
+        if not account_access_allowed(uid):
+            return jsonify({"error": "account_inactive"}), 403
+
+        data = request.json or {}
+        method_code = data.get("method_code")
+        destination = (data.get("destination") or "").strip()
+        requested_egp_cents = data.get("requested_egp_cents")
+        usdt_amount = data.get("usdt_amount")
+        network_code = data.get("network_code")
+
+        # Validate account details length (same as bot: ≤250 chars)
+        if not destination or len(destination) > 250:
+            return jsonify({"error": "invalid_destination"}), 400
+
+        # Parse usdt_amount if provided
+        usdt_dec = None
+        if usdt_amount is not None:
+            try:
+                usdt_dec = Decimal(str(usdt_amount))
+            except (InvalidOperation, ValueError, TypeError):
+                return jsonify({"error": "invalid_usdt_amount"}), 400
+
+        # Parse requested_egp_cents if provided
+        egp_cents = None
+        if requested_egp_cents is not None:
+            try:
+                egp_cents = int(requested_egp_cents)
+            except (TypeError, ValueError):
+                return jsonify({"error": "invalid_egp_amount"}), 400
+
+        # Referral double-check (same as bot's callback_withdraw_earnings)
+        if run_referral_withdrawal_double_check:
+            referral_check = run_referral_withdrawal_double_check(uid)
+            if referral_check.get("blocked"):
+                return jsonify({"error": "fraud"}), 403
+            if referral_check.get("unknown"):
+                return jsonify({"error": "verification_unavailable"}), 503
+
+        # Call the existing V2 function — handles all validations atomically
+        result = create_v2_withdrawal_request(
+            user_id=uid,
+            method_code=method_code,
+            destination=destination,
+            requested_egp_cents=egp_cents,
+            usdt_amount=usdt_dec,
+            network_code=network_code,
+        )
+
+        # Map error strings to HTTP responses (exact matches from create_v2_withdrawal_request)
+        error_map = {
+            "method_not_supported": (400, "method_not_supported"),
+            "destination_invalid": (400, "destination_invalid"),
+            "below_minimum": (400, "below_minimum"),
+            "insufficient_balance": (402, "insufficient_balance"),
+            "cooldown": (429, "cooldown"),
+            "rate_unavailable": (503, "rate_unavailable"),
+            "fraud": (403, "fraud"),
+            "verification_unavailable": (503, "verification_unavailable"),
+        }
+
+        if isinstance(result, str):
+            if result in error_map:
+                status, error = error_map[result]
+                return jsonify({"error": error}), status
+            return jsonify({"error": "unknown_error"}), 500
+
+        return jsonify({"ok": True, "request_id": result})
 
     @app.route("/api/rewards/postback", methods=["POST"])
     def api_postback():

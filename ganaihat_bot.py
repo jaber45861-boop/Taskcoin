@@ -12376,6 +12376,8 @@ def run_bot():
         usdt_min_usdt=USDT_MIN_USDT,
         withdrawal_method_vodafone=WITHDRAWAL_METHOD_VODAFONE,
         withdrawal_method_usdt=WITHDRAWAL_METHOD_USDT,
+        create_v2_withdrawal_request=create_v2_withdrawal_request,
+        run_referral_withdrawal_double_check=run_referral_withdrawal_double_check,
     )
     if not API_SECRET:
         logging.getLogger("telegram_reward_api").warning(
