@@ -385,6 +385,35 @@ def register_reward_api(
             "methods": methods
         })
 
+    @app.route("/api/withdraw/min-amount")
+    def api_withdraw_min_amount():
+        """Return the minimum withdrawal amount in EGP cents.
+
+        Single source of truth: get_min_withdrawal() from ganaihat_bot.py:3178,
+        which reads currency_settings.min_withdrawal_cents.
+
+        Returns 503 if settings are unavailable — no hardcoded fallback.
+        """
+        uid = _authenticate_user()
+        if uid is None:
+            return jsonify({"error": "unauthorized"}), 401
+        user = get_user(uid)
+        if user is None:
+            return jsonify({"error": "user_not_found"}), 404
+
+        if user.get("withdrawal_blocked"):
+            return jsonify({"error": "withdrawal_blocked"}), 403
+
+        try:
+            min_cents = get_min_withdrawal()
+        except Exception:
+            return jsonify({"error": "settings_unavailable"}), 503
+
+        return jsonify({
+            "ok": True,
+            "min_amount_egp_cents": min_cents,
+        })
+
     @app.route("/api/rewards/postback", methods=["POST"])
     def api_postback():
         """Handle Monetag rewarded-ad postback."""
