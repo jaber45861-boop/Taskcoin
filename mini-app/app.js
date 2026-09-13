@@ -236,24 +236,32 @@ var DEMO = {
     if (withdrawLoading) return;
     withdrawLoading = true;
 
-    fetch("/api/withdraw/methods", {
-      credentials: "include",
-      headers: authHeaders(),
-    })
-      .then(function (res) {
-        if (!res.ok) throw res.status;
-        return res.json();
+    var fetchMethods = function () {
+      return fetch("/api/withdraw/methods", {
+        credentials: "include",
+        headers: authHeaders(),
       })
-      .then(function (data) {
-        withdrawCache = data;
-        withdrawLoading = false;
-        _paintWithdrawMethods(host, data);
-      })
-      .catch(function () {
-        withdrawLoading = false;
-        host.innerHTML =
-          '<p class="placeholder__text">تعذر تحميل طرق السحب. سجّل الدخول أولاً.</p>';
-      });
+        .then(function (res) {
+          if (!res.ok) throw res.status;
+          return res.json();
+        })
+        .then(function (data) {
+          withdrawCache = data;
+          withdrawLoading = false;
+          _paintWithdrawMethods(host, data);
+        })
+        .catch(function () {
+          withdrawLoading = false;
+          host.innerHTML =
+            '<p class="placeholder__text">تعذر تحميل طرق السحب. سجّل الدخول أولاً.</p>';
+        });
+    };
+
+    if (sessionReady) {
+      sessionReady.then(fetchMethods);
+    } else {
+      initSession().then(fetchMethods);
+    }
   }
 
   function _paintWithdrawMethods(host, data) {
