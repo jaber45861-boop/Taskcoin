@@ -66,6 +66,7 @@ var DEMO = {
       buttons[j].classList.toggle("is-active", buttons[j].getAttribute("data-nav") === name);
     }
     if (name === "profile") renderProfile();
+    if (name === "withdraw") { /* placeholder view — no API calls */ }
     window.scrollTo({ top: 0 });
   }
 
@@ -220,6 +221,22 @@ var DEMO = {
     return el.innerHTML;
   }
 
+  // ── Withdraw button ────────────────────────────────────────
+  function bindWithdrawal() {
+    var btn = document.getElementById("withdraw-btn");
+    if (btn) {
+      btn.addEventListener("click", function () {
+        switchView("withdraw");
+      });
+    }
+    var back = document.getElementById("withdraw-back");
+    if (back) {
+      back.addEventListener("click", function () {
+        switchView("home");
+      });
+    }
+  }
+
   // ── Telegram theme sync (presentation only) ──────────────
   function bindTelegramTheme() {
     var tg = window.Telegram && window.Telegram.WebApp;
@@ -265,6 +282,7 @@ var DEMO = {
   renderBalance();
   renderQuickActions();
   renderActivity();
-  bindNavigation();
-  bindTelegramTheme();
+bindNavigation();
+    bindWithdrawal();
+    bindTelegramTheme();
 })();
