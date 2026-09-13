@@ -85,14 +85,16 @@
       </div>
     </section>
 
-    <!-- ═══ Withdraw (placeholder) ═══ -->
+    <!-- ═══ Withdraw (method selection) ═══ -->
     <section class="view" id="view-withdraw" data-view="withdraw">
-      <div class="placeholder card">
-        <div class="placeholder__icon">💸</div>
-        <h2 class="placeholder__title">السحوبات</h2>
-        <p class="placeholder__text">وراءة السحب ستظهر هنا قريبًا.</p>
-        <button class="balance__btn" id="withdraw-back" type="button">🔙 رجوع</button>
+      <div class="section">
+        <h2 class="section__title">اختر طريقة السحب</h2>
+        <div class="section__head">
+          <span class="section__hint" id="withdraw-method-count"></span>
+        </div>
+        <div id="withdraw-methods"><!-- rendered by app.js --></div>
       </div>
+      <button class="balance__btn" id="withdraw-back" type="button">🔙 رجوع</button>
     </section>
 
     <!-- ═══ Bottom Navigation ═══ -->

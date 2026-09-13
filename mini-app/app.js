@@ -66,7 +66,7 @@ var DEMO = {
       buttons[j].classList.toggle("is-active", buttons[j].getAttribute("data-nav") === name);
     }
     if (name === "profile") renderProfile();
-    if (name === "withdraw") { /* placeholder view — no API calls */ }
+    if (name === "withdraw") renderWithdrawMethods();
     window.scrollTo({ top: 0 });
   }
 
@@ -219,6 +219,78 @@ var DEMO = {
     var el = document.createElement("span");
     el.textContent = s;
     return el.innerHTML;
+  }
+
+  // ── Withdraw methods ────────────────────────────────────────
+  var withdrawCache = null;
+  var withdrawLoading = false;
+
+  function renderWithdrawMethods() {
+    var host = document.getElementById("withdraw-methods");
+    if (!host) return;
+
+    if (withdrawCache && host.querySelector(".withdraw__method")) return;
+
+    host.innerHTML =
+      '<p class="placeholder__text">جاري التحميل…</p>';
+
+    if (withdrawLoading) return;
+    withdrawLoading = true;
+
+    fetch("/api/withdraw/methods", {
+      credentials: "include",
+      headers: authHeaders(),
+    })
+      .then(function (res) {
+        if (!res.ok) throw res.status;
+        return res.json();
+      })
+      .then(function (data) {
+        withdrawCache = data;
+        withdrawLoading = false;
+        _paintWithdrawMethods(host, data);
+      })
+      .catch(function () {
+        withdrawLoading = false;
+        host.innerHTML =
+          '<p class="placeholder__text">تعذر تحميل طرق السحب. سجّل الدخول أولاً.</p>';
+      });
+  }
+
+  function _paintWithdrawMethods(host, data) {
+    var count = document.getElementById("withdraw-method-count");
+    if (count) count.textContent = data.methods.length + " طرق";
+
+    host.innerHTML = "";
+    data.methods.forEach(function (m) {
+      var card = document.createElement("div");
+      card.className = "card withdraw__method";
+
+      var icon = document.createElement("span");
+      icon.className = "withdraw__icon";
+      icon.textContent = m.type === "mobile_wallet" ? "📱" : "₿";
+
+      var body = document.createElement("div");
+      body.className = "withdraw__body";
+
+      var name = document.createElement("h3");
+      name.className = "withdraw__name";
+      name.textContent = m.name_ar || m.name;
+
+      var info = document.createElement("p");
+      info.className = "withdraw__info";
+      if (m.type === "mobile_wallet") {
+        info.textContent = "الحد الأدنى: " + m.min_amount_egp_cents + "قرش";
+      } else {
+        info.textContent = "الحد الأدنى: " + m.min_amount_usdt + " USDT";
+      }
+
+      body.appendChild(name);
+      body.appendChild(info);
+      card.appendChild(icon);
+      card.appendChild(body);
+      host.appendChild(card);
+    });
   }
 
   // ── Withdraw button ────────────────────────────────────────
