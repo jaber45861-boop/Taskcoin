@@ -225,6 +225,9 @@ def register_reward_api(
     withdrawal_method_usdt: str = "usdt",
     create_v2_withdrawal_request=None,
     run_referral_withdrawal_double_check=None,
+    parse_currency_input=None,
+    row_balance_cents=None,
+    egp_cents_to_wallet_nano=None,
 ):
     """Register Flask routes for the Mini App reward API."""
     global _live_egp_per_usd
@@ -516,6 +519,62 @@ def register_reward_api(
             return jsonify({"error": "unknown_error"}), 500
 
         return jsonify({"ok": True, "request_id": result})
+
+    @app.route("/api/withdraw/validate-amount", methods=["POST"])
+    def api_withdraw_validate_amount():
+        """Validate withdrawal amount using bot's handle_withdrawal_amount logic.
+
+        Single source of truth: parse_currency_input(), get_min_withdrawal(),
+        row_balance_cents(), egp_cents_to_wallet_nano() from ganaihat_bot.py.
+        Matches handle_withdrawal_amount() lines 7070-7091 exactly.
+
+        Request body:
+            raw_amount: str (e.g. "500", "$10", "100 EGP")
+
+        Returns:
+            200: {"ok": true, "amount_egp_cents": <int>}
+            400: {"error": "invalid_amount"}
+            402: {"error": "insufficient_balance"}
+            503: {"error": "settings_unavailable"}
+        """
+        uid = _authenticate_user()
+        if uid is None:
+            return jsonify({"error": "unauthorized"}), 401
+        user = get_user(uid)
+        if user is None:
+            return jsonify({"error": "user_not_found"}), 404
+
+        if user["withdrawal_blocked"]:
+            return jsonify({"error": "withdrawal_blocked"}), 403
+
+        if not account_access_allowed(uid):
+            return jsonify({"error": "account_inactive"}), 403
+
+        data = request.json or {}
+        raw_amount = data.get("raw_amount")
+
+        if not parse_currency_input or not get_min_withdrawal or not row_balance_cents or not egp_cents_to_wallet_nano:
+            return jsonify({"error": "settings_unavailable"}), 503
+
+        # Step 1: parse_currency_input (bot line 7070)
+        amount_cents = parse_currency_input(raw_amount)
+
+        # Step 2: check against get_min_withdrawal (bot line 7071)
+        min_cents = get_min_withdrawal()
+        if amount_cents is None or amount_cents < min_cents:
+            return jsonify({"error": "invalid_amount"}), 400
+
+        # Step 3: convert to USD nano (bot line 7084)
+        amount_usd_nano = egp_cents_to_wallet_nano(amount_cents)
+
+        # Step 4: check balance (bot line 7085)
+        if row_balance_cents(user) < amount_usd_nano:
+            return jsonify({"error": "insufficient_balance"}), 402
+
+        return jsonify({
+            "ok": True,
+            "amount_egp_cents": amount_cents,
+        })
 
     @app.route("/api/rewards/postback", methods=["POST"])
     def api_postback():

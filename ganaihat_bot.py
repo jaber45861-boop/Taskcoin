@@ -12378,6 +12378,9 @@ def run_bot():
         withdrawal_method_usdt=WITHDRAWAL_METHOD_USDT,
         create_v2_withdrawal_request=create_v2_withdrawal_request,
         run_referral_withdrawal_double_check=run_referral_withdrawal_double_check,
+        parse_currency_input=parse_currency_input,
+        row_balance_cents=row_balance_cents,
+        egp_cents_to_wallet_nano=egp_cents_to_wallet_nano,
     )
     if not API_SECRET:
         logging.getLogger("telegram_reward_api").warning(
