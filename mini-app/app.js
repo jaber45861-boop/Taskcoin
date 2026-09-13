@@ -10,7 +10,6 @@ var DEMO = {
     quickActions: [
       { icon: "🎯", label: "المهام",     nav: "tasks" },
       { icon: "👥", label: "invitation صديق", nav: "invite" },
-      { icon: "💸", label: " withdrawal",       nav: "profile" },
       { icon: "🎁", label: "المكافآت",  nav: "home" },
     ],
   };
