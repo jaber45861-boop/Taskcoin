@@ -489,6 +489,7 @@ body {
 /* ── Withdraw amount input ────────────────────────────────── */
 
 .input {
+  box-sizing: border-box;
   width: 100%;
   padding: 12px 14px;
   margin-top: 8px;

@@ -387,7 +387,7 @@ var DEMO = {
       next.addEventListener("click", function () {
         var raw = (input.value || "").trim();
         if (!raw) {
-          err.textContent = "⚠️ أدخل مبلقاً صحيحاً.";
+          err.textContent = "⚠️ أدخل مبلطاً صحيحاً.";
           return;
         }
         err.textContent = "";
@@ -430,7 +430,7 @@ var DEMO = {
       case "account_inactive":
         return "⚠️ الحساب غير نشط.";
       case "user_not_found":
-        return "⚠️ لم يُfound المستخدم.";
+        return "⚠️ لا يوجد مستخدم.";
       case "settings_unavailable":
         return "⚠️ لا يمكن تحديد الحد الأدنى حاليًا.";
       case "unauthorized":
