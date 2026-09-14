@@ -289,7 +289,7 @@ var DEMO = {
       var info = document.createElement("p");
       info.className = "withdraw__info";
       if (m.type === "mobile_wallet") {
-        info.textContent = "الحد الأدنى: " + m.min_amount_egp_cents + "قرش";
+        info.textContent = "الحد الأدنى: " + m.min_amount_egp_cents + " قرش";
       } else {
         info.textContent = "الحد الأدنى: " + m.min_amount_usdt + " USDT";
       }
@@ -419,7 +419,7 @@ var DEMO = {
       next.addEventListener("click", function () {
         var raw = (input.value || "").trim();
         if (!raw) {
-          err.textContent = "⚠️ أدخل مبلطاً صحيحاً.";
+          err.textContent = "⚠️ أدخل مبلغًا صحيحًا.";
           return;
         }
         err.textContent = "";
