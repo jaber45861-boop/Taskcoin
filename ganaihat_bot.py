@@ -1,5 +1,5 @@
 import os
-from flask import Flask, jsonify
+from flask import Flask, jsonify, send_from_directory
 from threading import Thread
 import logging
 
@@ -9,9 +9,23 @@ from waitress import serve
 app = Flask(__name__)
 _http_thread: Thread | None = None
 
+_MINI_APP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mini-app")
+
+
 @app.route('/')
 def home():
-    return "I am alive!"
+    return send_from_directory(_MINI_APP_DIR, 'index.html')
+
+
+@app.route('/app.js')
+def mini_app_js():
+    return send_from_directory(_MINI_APP_DIR, 'app.js', mimetype='application/javascript')
+
+
+@app.route('/styles.css')
+def mini_app_css():
+    return send_from_directory(_MINI_APP_DIR, 'styles.css', mimetype='text/css')
+
 
 @app.route("/healthz")
 def healthz():
