@@ -336,10 +336,37 @@ var DEMO = {
   var withdrawState = {
     method: null,
     methodAr: null,
-    amountCents: null
+    amountCents: null,
+    usdtAmount: null,
+    networkCode: null,
+    destination: null
   };
 
+  function _isVodafone() { return withdrawState.method === "vodafone"; }
+  function _isUsdt()     { return withdrawState.method === "usdt"; }
+
+  function _validateVodafoneAccount(dest) {
+    return /^01\d{9}$/.test(dest);
+  }
+
+  function _validateUsdtAddress(dest) {
+    return /^0x[0-9a-fA-F]{40}$/.test(dest);
+  }
+
   function validateWithdrawAmount(rawAmount) {
+    // USDT: client-side only — preserve raw input exactly as entered
+    if (_isUsdt()) {
+      try {
+        var usdtAmt = parseFloat(rawAmount);
+        if (isNaN(usdtAmt) || usdtAmt < 0.15) {
+          return Promise.resolve({ error: "invalid_amount" });
+        }
+        return Promise.resolve({ valid: true, usdtAmount: rawAmount });
+      } catch (e) {
+        return Promise.resolve({ error: "invalid_amount" });
+      }
+    }
+    // Vodafone: server validates EGP parsing, min, and balance
     return fetch("/api/withdraw/validate-amount", {
       method: "POST",
       credentials: "include",
@@ -395,7 +422,18 @@ var DEMO = {
         validateWithdrawAmount(raw).then(function (result) {
           next.disabled = false;
           if (result && result.valid) {
-            withdrawState.amountCents = result.amountCents;
+            if (result.amountCents !== undefined) withdrawState.amountCents = result.amountCents;
+            if (result.usdtAmount !== undefined)   withdrawState.usdtAmount = result.usdtAmount;
+            // Update account hint based on method
+            var acctHint = document.getElementById("withdraw-account-hint");
+            var acctInput = document.getElementById("withdraw-account-input");
+            if (_isVodafone()) {
+              if (acctHint) acctHint.textContent = "أدخل رقم محفظة Vodafone Cash (11 رقم يبدأ بـ 01)";
+              if (acctInput) acctInput.placeholder = "01XXXXXXXXX";
+            } else {
+              if (acctHint) acctHint.textContent = "أدخل عنوان محفظتك على BEP-20 (يبدأ بـ 0x)";
+              if (acctInput) acctInput.placeholder = "0x...";
+            }
             switchView("withdraw-account");
           } else {
             err.textContent = withdrawAmountErrorText(result.error);
@@ -442,9 +480,9 @@ var DEMO = {
     }
   }
 
-  // ── Withdraw account (validation only) ────────────────────
+  // ── Withdraw account + final submission ────────────────────
   function bindWithdrawAccount() {
-    var submit = document.getElementById("withdraw-account-submit");
+    var submitBtn = document.getElementById("withdraw-account-submit");
     var back = document.getElementById("withdraw-account-back");
     var input = document.getElementById("withdraw-account-input");
     var err = document.getElementById("withdraw-account-error");
@@ -454,14 +492,39 @@ var DEMO = {
       hint.textContent = "طريقة السحب: " + withdrawState.methodAr;
     }
 
-    if (submit) {
-      submit.addEventListener("click", function () {
-        var account = (input.value || "").trim();
-        if (!account || account.length > 250) {
+    if (submitBtn) {
+      submitBtn.addEventListener("click", function () {
+        var dest = (input.value || "").trim();
+        err.textContent = "";
+
+        if (!dest || dest.length > 250) {
           err.textContent = "⚠️ أرسل رقم المحفظة أو الحساب بشكل صحيح (بحد أقصى 250 حرفاً).";
           return;
         }
-        err.textContent = "";
+
+        // Validate format matching bot's validate_vodafone_destination / validate_usdt_bep20_address
+        if (_isVodafone() && !_validateVodafoneAccount(dest)) {
+          err.textContent = "⚠️ رقم Vodafone غير صالح. أرسل 11 رقم يبدأ بـ 01.";
+          return;
+        }
+        if (_isUsdt() && !_validateUsdtAddress(dest)) {
+          err.textContent = "⚠️ عنوان BEP-20 غير صالح. يجب أن يبدأ بـ 0x ويكون 42 محرف hex.";
+          return;
+        }
+
+        withdrawState.destination = dest;
+        submitBtn.disabled = true;
+        submitBtn.textContent = "⏳ جاري الإرسال...";
+
+        submitWithdrawRequest().then(function (result) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = "✅ إرسال الطلب";
+          if (result && result.ok) {
+            showWithdrawSuccess();
+          } else {
+            err.textContent = withdrawSubmitErrorText(result.error);
+          }
+        });
       });
     }
 
@@ -469,15 +532,96 @@ var DEMO = {
       back.addEventListener("click", function () {
         input.value = "";
         err.textContent = "";
-        switchView("withdraw-amount");
+        // Go back to the correct amount view based on method
+        if (_isUsdt()) {
+          switchView("withdraw-usdt-amount");
+        } else {
+          switchView("withdraw-amount");
+        }
       });
     }
 
     if (input) {
       input.addEventListener("keydown", function (e) {
-        if (e.key === "Enter") { e.preventDefault(); submit.click(); }
+        if (e.key === "Enter" && submitBtn && !submitBtn.disabled) { e.preventDefault(); submitBtn.click(); }
       });
     }
+  }
+
+  /** Submit withdrawal request matching create_v2_withdrawal_request semantics exactly.
+   *  Vodafone → requested_egp_cents (EGP cents, integer from /api/withdraw/validate-amount)
+   *  USDT     → usdt_amount (raw user input string, no conversion)
+   *  USDT     → network_code: "BSC_BEP20" */
+  function submitWithdrawRequest() {
+    var body = {
+      method_code: withdrawState.method,
+      destination: withdrawState.destination
+    };
+
+    if (_isVodafone()) {
+      body.requested_egp_cents = withdrawState.amountCents;
+    } else if (_isUsdt()) {
+      body.usdt_amount = withdrawState.usdtAmount;
+      body.network_code = "BSC_BEP20";
+    }
+
+    return fetch("/api/withdraw", {
+      method: "POST",
+      credentials: "include",
+      headers: authHeaders(),
+      body: JSON.stringify(body),
+    })
+      .then(function (res) {
+        return res.json().then(function (d) {
+          if (res.ok && d.ok) return { ok: true, requestId: d.request_id };
+          return { error: d.error || "unknown_error" };
+        });
+      })
+      .catch(function () {
+        return { error: "network_error" };
+      });
+  }
+
+  function withdrawSubmitErrorText(code) {
+    switch (code) {
+      case "method_not_supported":
+        return "⚠️ طريقة السحب غير مدعومة.";
+      case "destination_invalid":
+        return "⚠️ بيانات الوجهة غير صالحة.";
+      case "below_minimum":
+        return "⚠️ المبلغ أقل من الحد الأدنى المسموح.";
+      case "insufficient_balance":
+        return "❌ رصيدك غير كافٍ لإتمام هذا السحب.";
+      case "cooldown":
+        return "⏳ لقد استخدمت طلب السحب بالفعل. يمكنك طلب سحب جديد لاحقاً.";
+      case "rate_unavailable":
+        return "⚠️ تعذر الحصول على سعر صرف محدّث. حاول لاحقاً.";
+      case "fraud":
+        return "🚫 تم إيقاف طلب السحب مؤقتاً.";
+      case "unauthorized":
+        return "⚠️ يرجى تسجيل الدخول أولاً.";
+      case "network_error":
+        return "⚠️ فشل الاتصال بالخادم. حاول مرة أخرى.";
+      default:
+        return "⚠️ تعذر إنشاء طلب السحب. حاول لاحقاً.";
+    }
+  }
+
+  function showWithdrawSuccess() {
+    var host = document.getElementById("view-withdraw-account");
+    if (!host) {
+      switchView("home");
+      return;
+    }
+    host.innerHTML =
+      '<div class="placeholder card">' +
+      '  <div class="placeholder__icon">✅</div>' +
+      '  <h2 class="placeholder__title">تم استلام طلب السحب</h2>' +
+      '  <p class="placeholder__text">سيتم مراجعته وتحويل المبلغ خلال 24 ساعة كحد أقصى.</p>' +
+      '</div>' +
+      '<button class="balance__btn" id="withdraw-success-back" type="button">🏠 الرئيسية</button>';
+    var backBtn = document.getElementById("withdraw-success-back");
+    if (backBtn) backBtn.addEventListener("click", function () { switchView("home"); });
   }
 
   // ── Telegram theme sync (presentation only) ──────────────
