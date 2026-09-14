@@ -539,7 +539,7 @@ var DEMO = {
         err.textContent = "";
         // Go back to the correct amount view based on method
         if (_isUsdt()) {
-          switchView("withdraw-usdt-amount");
+          switchView("withdraw-amount");
         } else {
           switchView("withdraw-amount");
         }
