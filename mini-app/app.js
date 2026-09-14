@@ -346,7 +346,12 @@ var DEMO = {
   function _isUsdt()     { return withdrawState.method === "usdt"; }
 
   function _validateVodafoneAccount(dest) {
-    return /^01\d{9}$/.test(dest);
+    if (!dest) return false;
+    var cleaned = dest.replace(/\s/g, "").replace(/-/g, "").replace(/\+/g, "");
+    if (!/^\d+$/.test(cleaned)) return false;
+    // 11 digits: 01 + 9 digits  OR  10 digits: 1 + 9 digits (without leading 0)
+    return (cleaned.length === 11 && cleaned.indexOf("01") === 0) ||
+           (cleaned.length === 10 && cleaned.charAt(0) === "1");
   }
 
   function _validateUsdtAddress(dest) {
@@ -598,6 +603,18 @@ var DEMO = {
         return "⚠️ تعذر الحصول على سعر صرف محدّث. حاول لاحقاً.";
       case "fraud":
         return "🚫 تم إيقاف طلب السحب مؤقتاً.";
+      case "verification_unavailable":
+        return "⚠️ تعذر التحقق من بعض الإحالات. حاول لاحقاً.";
+      case "user_not_found":
+        return "⚠️ المستخدم غير موجود.";
+      case "withdrawal_blocked":
+        return "⚠️ السحب ممنوع على حسابك.";
+      case "account_inactive":
+        return "⚠️ الحساب غير نشط.";
+      case "invalid_usdt_amount":
+        return "⚠️ كمية USDT غير صالحة.";
+      case "invalid_egp_amount":
+        return "⚠️ مبلغ EGP غير صالح.";
       case "unauthorized":
         return "⚠️ يرجى تسجيل الدخول أولاً.";
       case "network_error":
