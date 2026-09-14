@@ -272,6 +272,8 @@ var DEMO = {
     data.methods.forEach(function (m) {
       var card = document.createElement("div");
       card.className = "card withdraw__method";
+      card.setAttribute("data-method", m.code || "");
+      card.setAttribute("data-method-ar", m.name_ar || m.name || "");
 
       var icon = document.createElement("span");
       icon.className = "withdraw__icon";
@@ -313,6 +315,130 @@ var DEMO = {
       back.addEventListener("click", function () {
         switchView("home");
       });
+    }
+    // Method card selection → amount view
+    var methodsHost = document.getElementById("withdraw-methods");
+    if (methodsHost) {
+      methodsHost.addEventListener("click", function (e) {
+        var card = e.target.closest(".withdraw__method");
+        if (!card) return;
+        withdrawState.method = card.getAttribute("data-method");
+        withdrawState.methodAr = card.getAttribute("data-method-ar");
+        withdrawState.amountCents = null;
+        var hint = document.getElementById("withdraw-amount-hint");
+        if (hint) hint.textContent = "طريقة السحب: " + withdrawState.methodAr;
+        switchView("withdraw-amount");
+      });
+    }
+  }
+
+  // ── Withdraw amount (state + validation) ────────────────────
+  var withdrawState = {
+    method: null,
+    methodAr: null,
+    amountCents: null
+  };
+
+  function validateWithdrawAmount(rawAmount) {
+    return fetch("/api/withdraw/validate-amount", {
+      method: "POST",
+      credentials: "include",
+      headers: authHeaders(),
+      body: JSON.stringify({ raw_amount: rawAmount }),
+    })
+      .then(function (res) {
+        if (res.status === 401) {
+          return { error: "unauthorized" };
+        }
+        if (res.status === 403) {
+          return res.json().then(function (d) { return { error: d.error || "forbidden" }; });
+        }
+        if (res.status === 404) {
+          return { error: "user_not_found" };
+        }
+        if (!res.ok) {
+          return res.json().then(function (d) { return { error: d.error || "invalid_amount" }; });
+        }
+        return res.json();
+      })
+      .then(function (d) {
+        if (d && d.ok) {
+          return { valid: true, amountCents: d.amount_egp_cents };
+        }
+        return { error: (d && d.error) || "invalid_amount" };
+      })
+      .catch(function () {
+        return { error: "network_error" };
+      });
+  }
+
+  function bindWithdrawAmount() {
+    var next = document.getElementById("withdraw-amount-next");
+    var back = document.getElementById("withdraw-amount-back");
+    var input = document.getElementById("withdraw-amount-input");
+    var err = document.getElementById("withdraw-amount-error");
+    var hint = document.getElementById("withdraw-amount-hint");
+
+    if (hint && withdrawState.methodAr) {
+      hint.textContent = "طريقة السحب: " + withdrawState.methodAr;
+    }
+
+    if (next) {
+      next.addEventListener("click", function () {
+        var raw = (input.value || "").trim();
+        if (!raw) {
+          err.textContent = "⚠️ أدخل مبلقاً صحيحاً.";
+          return;
+        }
+        err.textContent = "";
+        next.disabled = true;
+        validateWithdrawAmount(raw).then(function (result) {
+          next.disabled = false;
+          if (result && result.valid) {
+            withdrawState.amountCents = result.amountCents;
+            switchView("withdraw-account");
+          } else {
+            err.textContent = withdrawAmountErrorText(result.error);
+          }
+        });
+      });
+    }
+
+    if (back) {
+      back.addEventListener("click", function () {
+        input.value = "";
+        err.textContent = "";
+        switchView("withdraw");
+      });
+    }
+
+    if (input) {
+      input.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") { e.preventDefault(); next.click(); }
+      });
+    }
+  }
+
+  function withdrawAmountErrorText(code) {
+    switch (code) {
+      case "invalid_amount":
+        return "⚠️ المبلغ غير صحيح أو أقل من الحد الأدنى.";
+      case "insufficient_balance":
+        return "⚠️ الرصيد الحالي لا يكفي ل سحب المبلغ.";
+      case "withdrawal_blocked":
+        return "⚠️ السحب ممنوع على حسابك.";
+      case "account_inactive":
+        return "⚠️ الحساب غير نشط.";
+      case "user_not_found":
+        return "⚠️ لم يُfound المستخدم.";
+      case "settings_unavailable":
+        return "⚠️ لا يمكن تحديد الحد الأدنى حاليًا.";
+      case "unauthorized":
+        return "⚠️ يرجى تسجيل الدخول أولاً.";
+      case "network_error":
+        return "⚠️ فشل الاتصال بالخادم.";
+      default:
+        return "⚠️ حدث خطأ غير معروف.";
     }
   }
 
@@ -363,5 +489,6 @@ var DEMO = {
   renderActivity();
 bindNavigation();
     bindWithdrawal();
+    bindWithdrawAmount();
     bindTelegramTheme();
 })();

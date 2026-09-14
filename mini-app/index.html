@@ -97,6 +97,20 @@
       <button class="balance__btn" id="withdraw-back" type="button">🔙 رجوع</button>
     </section>
 
+    <!-- ═══ Withdraw (amount input) ═══ -->
+    <section class="view" id="view-withdraw-amount" data-view="withdraw-amount">
+      <div class="section">
+        <h2 class="section__title">ادخل مبلغ السحب</h2>
+        <div class="section__head">
+          <span class="section__hint" id="withdraw-amount-hint"></span>
+        </div>
+        <input type="text" id="withdraw-amount-input" class="input" placeholder="مثلاً: 500 أو $10" autocomplete="off" inputmode="decimal" />
+        <div id="withdraw-amount-error" class="error-text"></div>
+      </div>
+      <button class="balance__btn balance__btn--primary" id="withdraw-amount-next" type="button">➡️ التالي</button>
+      <button class="balance__btn" id="withdraw-amount-back" type="button">🔙 رجوع</button>
+    </section>
+
     <!-- ═══ Bottom Navigation ═══ -->
     <nav class="bottom-nav" id="bottom-nav">
       <button class="bottom-nav__item is-active" data-nav="home" type="button">

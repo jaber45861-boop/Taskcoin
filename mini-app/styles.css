@@ -486,6 +486,34 @@ body {
   min-width: 0;
 }
 
+/* ── Withdraw amount input ────────────────────────────────── */
+
+.input {
+  width: 100%;
+  padding: 12px 14px;
+  margin-top: 8px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 15px;
+  text-align: start;
+  direction: rtl;
+  font-family: inherit;
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.error-text {
+  color: var(--accent);
+  font-size: 13px;
+  margin-top: 8px;
+  min-height: 18px;
+}
+
 /* ── Interaction states: active + keyboard focus ────────── */
 
 .balance__btn:active,
