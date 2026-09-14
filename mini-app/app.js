@@ -442,6 +442,44 @@ var DEMO = {
     }
   }
 
+  // ── Withdraw account (validation only) ────────────────────
+  function bindWithdrawAccount() {
+    var submit = document.getElementById("withdraw-account-submit");
+    var back = document.getElementById("withdraw-account-back");
+    var input = document.getElementById("withdraw-account-input");
+    var err = document.getElementById("withdraw-account-error");
+    var hint = document.getElementById("withdraw-account-hint");
+
+    if (hint && withdrawState.methodAr) {
+      hint.textContent = "طريقة السحب: " + withdrawState.methodAr;
+    }
+
+    if (submit) {
+      submit.addEventListener("click", function () {
+        var account = (input.value || "").trim();
+        if (!account || account.length > 250) {
+          err.textContent = "⚠️ أرسل رقم المحفظة أو الحساب بشكل صحيح (بحد أقصى 250 حرفاً).";
+          return;
+        }
+        err.textContent = "";
+      });
+    }
+
+    if (back) {
+      back.addEventListener("click", function () {
+        input.value = "";
+        err.textContent = "";
+        switchView("withdraw-amount");
+      });
+    }
+
+    if (input) {
+      input.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") { e.preventDefault(); submit.click(); }
+      });
+    }
+  }
+
   // ── Telegram theme sync (presentation only) ──────────────
   function bindTelegramTheme() {
     var tg = window.Telegram && window.Telegram.WebApp;
@@ -490,5 +528,6 @@ var DEMO = {
 bindNavigation();
     bindWithdrawal();
     bindWithdrawAmount();
+    bindWithdrawAccount();
     bindTelegramTheme();
 })();

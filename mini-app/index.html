@@ -111,6 +111,20 @@
       <button class="balance__btn" id="withdraw-amount-back" type="button">🔙 رجوع</button>
     </section>
 
+    <!-- ═══ Withdraw (account input) ═══ -->
+    <section class="view" id="view-withdraw-account" data-view="withdraw-account">
+      <div class="section">
+        <h2 class="section__title">أرسل رقم الحساب أو المحفظة</h2>
+        <div class="section__head">
+          <span class="section__hint" id="withdraw-account-hint"></span>
+        </div>
+        <input type="text" id="withdraw-account-input" class="input" placeholder="رقم المحفظة أو الحساب" autocomplete="off" />
+        <div id="withdraw-account-error" class="error-text"></div>
+      </div>
+      <button class="balance__btn balance__btn--primary" id="withdraw-account-submit" type="button">✅ إرسال الطلب</button>
+      <button class="balance__btn" id="withdraw-account-back" type="button">🔙 رجوع</button>
+    </section>
+
     <!-- ═══ Bottom Navigation ═══ -->
     <nav class="bottom-nav" id="bottom-nav">
       <button class="bottom-nav__item is-active" data-nav="home" type="button">
