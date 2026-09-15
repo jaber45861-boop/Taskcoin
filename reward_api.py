@@ -1,11 +1,10 @@
-"""reward_api.py — Flask routes for the Mini App reward API.
+"""reward_api.py — Flask routes for the reward API.
 
 Handles:
   - /healthz health check
   - /api/rewards/balance  — authenticated balance lookup
   - /api/profile          — authenticated user profile
   - /api/rewards/postback — Monetag rewarded-ad postback receiver
-  - /api/rewards/session  — Mini App session verification
   - /payment/callback     — provider-agnostic commission webhook
 """
 
@@ -203,7 +202,7 @@ def register_reward_api(
     account_access_allowed,
     bot_token: str,
     api_secret: str,
-    session_secret: str,
+    session_secret: str = "",
     db_path: str,
     monetag_zone_id: str,
     allowed_origins: str,
@@ -229,7 +228,7 @@ def register_reward_api(
     row_balance_cents=None,
     egp_cents_to_wallet_nano=None,
 ):
-    """Register Flask routes for the Mini App reward API."""
+    """Register Flask routes for the reward API."""
     global _live_egp_per_usd
     _rate = Decimal(str(egp_per_usd))
     if not _rate.is_finite() or _rate <= 0:
@@ -781,32 +780,6 @@ def register_reward_api(
         })
 
 
-    @app.route("/api/rewards/session", methods=["POST"])
-    def api_session():
-        """Verify a Mini App session using initData."""
-        if not session_secret:
-            return jsonify({"error": "sessions_disabled"}), 503
-
-        data = request.json or {}
-        init_data = data.get("initData", "")
-        if not init_data:
-            return jsonify({"error": "missing_initData"}), 400
-
-        parsed = _verify_telegram_init_data(init_data, bot_token)
-        if parsed is None:
-            return jsonify({"error": "invalid_initData"}), 401
-
-        user_id = parsed.get("user", {}).get("id")
-        if user_id is None:
-            return jsonify({"error": "no_user_in_initData"}), 401
-
-        session_token = _create_session_token(user_id, session_secret)
-        return jsonify({
-            "ok": True,
-            "user_id": user_id,
-            "session_token": session_token,
-        })
-
 
     # ─── CPAGrip Offer Feed ────────────────────────────────────────────────
     @app.route("/api/cpagrip/offers", methods=["GET"])
@@ -1020,24 +993,6 @@ def register_reward_api(
         if not token or not session_secret:
             return None
         return _verify_session_token(token, session_secret)
-
-    def _verify_telegram_init_data(init_data: str, bot_token: str) -> dict | None:
-        """Verify Telegram Mini App initData using bot_token secret."""
-        try:
-            parts = dict(parse_qs(init_data, keep_blank_values=True))
-            if "hash" not in parts:
-                return None
-            received_hash = parts.pop("hash")[0]
-            data_check = "\n".join(f"{k}={v[0]}" for k, v in sorted(parts.items()))
-            secret_key = hmac.new(
-                bot_token.encode(), b"WebAppData", hashlib.sha256
-            ).digest()
-            computed = hmac.new(secret_key, data_check.encode(), hashlib.sha256).hexdigest()
-            if not hmac.compare_digest(computed, received_hash):
-                return None
-            return {k: v[0] for k, v in parts.items()}
-        except Exception:
-            return None
 
     def _create_session_token(user_id: int, secret: str) -> str:
         """Create a signed session token."""

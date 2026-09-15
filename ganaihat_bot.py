@@ -12344,10 +12344,6 @@ def run_bot():
         logging.getLogger("telegram_reward_api").warning(
             "API_SECRET is not configured; Monetag postbacks will be rejected."
         )
-    if not SESSION_SECRET and not API_SECRET:
-        logging.getLogger("telegram_reward_api").error(
-            "Neither SESSION_SECRET nor API_SECRET is configured; Mini App sessions are disabled."
-        )
     keep_alive()
     setup_bot_commands()
     print(f"✅ البوت يعمل الآن... قاعدة البيانات: {DB_PATH}", flush=True)
