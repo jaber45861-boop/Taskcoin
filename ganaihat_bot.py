@@ -68,14 +68,7 @@ import sys
 import logging
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
-from telebot.types import (
-    BotCommand,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    MenuButtonDefault,
-    MenuButtonWebApp,
-    WebAppInfo,
-)
+from telebot.types import BotCommand, InlineKeyboardMarkup, InlineKeyboardButton
 from telebot.apihelper import ApiTelegramException
 from urllib.parse import parse_qs, urlsplit
 import time
@@ -103,7 +96,6 @@ if not (0 <= _raw_pct <= 100):
         f"USER_PROFIT_PERCENTAGE must be between 0 and 100, got {_raw_pct}"
     )
 USER_PROFIT_PCT = _raw_pct / 100.0
-TELEGRAM_MINI_APP_URL = os.environ.get("TELEGRAM_MINI_APP_URL", "").strip()
 MONETAG_SDK_URL = os.environ.get("MONETAG_SDK_URL", "https://libtl.com/sdk.js").strip()
 MONETAG_SDK_NAME = os.environ.get(
     "MONETAG_SDK_NAME",
@@ -1097,36 +1089,6 @@ def setup_bot_commands():
         BotCommand("admin", "فتح لوحة تحكم المشرف"),
         BotCommand("help", "المساعدة"),
     ])
-    _setup_chat_menu_button()
-
-
-def _setup_chat_menu_button():
-    """يسجّل زر Telegram Mini App الرسمي «Open» أسفل الشات (قائمة المنيو).
-
-    يبقي كل الأزرار والوظائف الحالية كما هي دون أي تغيير.
-    """
-    if not TELEGRAM_MINI_APP_URL.startswith("https://"):
-        # لا يوجد Mini App: إعادة الزر الافتراضي لضمان سلوك متسق.
-        try:
-            bot.set_chat_menu_button(menu_button=MenuButtonDefault())
-        except Exception:
-            logging.getLogger(__name__).exception(
-                "Failed to reset default chat menu button"
-            )
-        return
-    try:
-        bot.set_chat_menu_button(
-            menu_button=MenuButtonWebApp(
-                type="web_app",
-                text="Open",
-                web_app=WebAppInfo(url=TELEGRAM_MINI_APP_URL),
-            )
-        )
-    except Exception:
-        # فشل تسجيل الزر لا يوقف تشغيل البوت.
-        logging.getLogger(__name__).exception(
-            "Failed to set Mini App chat menu button"
-        )
 
 
 def parse_money_to_cents(value: str | int | float | Decimal) -> int | None:
